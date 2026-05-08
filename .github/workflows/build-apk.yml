@@ -154,9 +154,10 @@ jobs:
           NDK_CXX="$TOOLCHAIN/bin/aarch64-linux-android26-clang++"
           SYSROOT_LIB="$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android/26"
 
-          # Wrapper: suppress warnings that break cross-compile
-          printf '#!/bin/bash\nexec "%s" -Wno-unused-command-line-argument -Wno-missing-prototypes -Wno-missing-variable-declarations "$@"\n' "$NDK_CC" > /usr/local/bin/pm3-cc
-          printf '#!/bin/bash\nexec "%s" -Wno-unused-command-line-argument -Wno-missing-prototypes -Wno-missing-variable-declarations "$@"\n' "$NDK_CXX" > /usr/local/bin/pm3-cxx
+          # Wrapper: pass all PM3 flags first, then append our -Wno- overrides last
+          # (clang: last flag wins, so our -Wno- must come after PM3's -Werror,...)
+          printf '#!/bin/bash\nexec "%s" "$@" -Wno-unused-command-line-argument -Wno-missing-prototypes -Wno-missing-variable-declarations\n' "$NDK_CC" > /usr/local/bin/pm3-cc
+          printf '#!/bin/bash\nexec "%s" "$@" -Wno-unused-command-line-argument -Wno-missing-prototypes -Wno-missing-variable-declarations\n' "$NDK_CXX" > /usr/local/bin/pm3-cxx
           chmod +x /usr/local/bin/pm3-cc /usr/local/bin/pm3-cxx
 
           export AR="$TOOLCHAIN/bin/llvm-ar"
