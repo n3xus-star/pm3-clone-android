@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  USB device filter — Android will offer to open PM3 Clone Assistant
+  automatically when any of these devices are plugged in.
+-->
+<resources>
+    <!-- Proxmark3 RDV4 official -->
+    <usb-device vendor-id="0x9AC4" product-id="0x4B8F" />
+
+    <!-- Common clone variants -->
+    <usb-device vendor-id="0x2D2D" product-id="0x504D" />
+    <usb-device vendor-id="0x1D50" product-id="0x6002" />
+    <usb-device vendor-id="0x16D0" product-id="0x06D8" />
+
+    <!-- Catch-all CDC ACM (class 0x02) — comment out if causes issues -->
+    <!-- <usb-device class="0x02" /> -->
+</resources>

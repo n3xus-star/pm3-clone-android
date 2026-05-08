@@ -1,0 +1,139 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:   # allows manual trigger from GitHub Actions tab
+
+jobs:
+  build-pm3-arm64:
+    name: Compile PM3 client for Android ARM64
+    runs-on: ubuntu-22.04
+    outputs:
+      pm3_binary: proxmark3-arm64
+
+    steps:
+      - name: Install Android NDK
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y wget unzip
+          NDK_VERSION=r25b
+          wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip
+          unzip -q android-ndk-${NDK_VERSION}-linux.zip
+          echo "NDK_HOME=$(pwd)/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
+
+      - name: Install PM3 build deps
+        run: |
+          sudo apt-get install -y git make gcc g++ pkg-config \
+            libreadline-dev libssl-dev libz-dev libusb-1.0-0-dev
+
+      - name: Clone PM3 Iceman fork
+        run: |
+          git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3.git pm3src
+
+      - name: Cross-compile PM3 client for Android ARM64
+        run: |
+          TOOLCHAIN=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          export CC=$TOOLCHAIN/bin/aarch64-linux-android26-clang
+          export CXX=$TOOLCHAIN/bin/aarch64-linux-android26-clang++
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export STRIP=$TOOLCHAIN/bin/llvm-strip
+          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+
+          cd pm3src
+
+          # Build client only, no firmware, no hardware deps
+          make client \
+            SKIPBT=1 \
+            SKIPQT=1 \
+            SKIPJANSSON=1 \
+            PLATFORM=GENERIC \
+            LDFLAGS="-static" \
+            2>&1 | tail -50
+
+          $STRIP client/proxmark3 || true
+          ls -lh client/proxmark3
+
+      - name: Upload PM3 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxmark3-arm64
+          path: pm3src/client/proxmark3
+
+  build-apk:
+    name: Build Android APK
+    needs: build-pm3-arm64
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout app source
+        uses: actions/checkout@v4
+
+      - name: Download PM3 ARM64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: proxmark3-arm64
+          path: .
+
+      - name: Make PM3 binary executable
+        run: chmod +x proxmark3
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install system dependencies for Buildozer
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            git zip unzip openjdk-17-jdk \
+            python3-pip autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev \
+            libtinfo5 cmake libffi-dev libssl-dev
+
+      - name: Install Buildozer
+        run: |
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.37
+
+      - name: Cache Buildozer global directory
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      - name: Build APK
+        run: |
+          buildozer -v android debug 2>&1 | tail -100
+
+      - name: Find built APK
+        run: |
+          APK_PATH=$(find bin/ -name "*.apk" | head -1)
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
+          echo "Built: $APK_PATH"
+          ls -lh $APK_PATH
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PM3-CloneAssistant-Android
+          path: ${{ env.APK_PATH }}
+          retention-days: 30
+
+      - name: Build summary
+        run: |
+          echo "## Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**APK:** \`${{ env.APK_PATH }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download the APK from the **Artifacts** section above." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Install on Android" >> $GITHUB_STEP_SUMMARY
+          echo "1. Enable **Install unknown apps** in Android settings" >> $GITHUB_STEP_SUMMARY
+          echo "2. Transfer APK to phone" >> $GITHUB_STEP_SUMMARY
+          echo "3. Tap APK to install" >> $GITHUB_STEP_SUMMARY
+          echo "4. Connect PM3 via USB-OTG cable" >> $GITHUB_STEP_SUMMARY
+          echo "5. Open PM3 Clone Assistant" >> $GITHUB_STEP_SUMMARY
