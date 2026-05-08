@@ -111,8 +111,20 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3.git pm3src
 
-      - name: Patch PM3 source — stub out unneeded HF-attack modules
+      - name: Patch PM3 source — remove x86 flags + stub HF-attack modules
         run: |
+          # Remove x86-only CPU flags that ARM64 clang rejects
+          find pm3src -name "Makefile*" | xargs sed -i \
+            's/-mno-mmx//g;
+             s/-mno-sse2//g;
+             s/-mno-sse4[^ ]*//g;
+             s/-mno-avx[^ ]*//g;
+             s/-mno-avx512[^ ]*//g;
+             s/-msse[^ ]*//g;
+             s/-mavx[^ ]*//g' 2>/dev/null || true
+
+          echo "=== x86 flags removed ==="
+
           cd pm3src/client/src
 
           # cmdhfmfhard — Mifare hardnested (needs lz4 + bzip2; not needed for LF/T5577)
