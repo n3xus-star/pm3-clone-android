@@ -125,6 +125,13 @@ jobs:
 
           echo "=== x86 flags removed ==="
 
+          # Skip reveng self-test (cross-compiled ARM64 binary can't run on x86_64 host)
+          REVENG_MK="pm3src/client/deps/reveng/Makefile"
+          if [ -f "$REVENG_MK" ]; then
+            sed -i 's|^\(\s*\)\./bmptst|\1echo "(skipped reveng self-test, cross-compile)"|g' "$REVENG_MK"
+            echo "=== reveng Makefile patched ==="
+          fi
+
           cd pm3src/client/src
 
           # cmdhfmfhard — Mifare hardnested (needs lz4 + bzip2; not needed for LF/T5577)
