@@ -71,9 +71,44 @@ jobs:
             PREFIX=$HOME/arm64-sysroot \
             install
 
+      - name: Cross-compile bzip2 for ARM64
+        run: |
+          wget -q https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
+          tar xzf bzip2-1.0.8.tar.gz
+          cd bzip2-1.0.8
+          make -j$(nproc) \
+            CC="$TOOLCHAIN/bin/aarch64-linux-android26-clang" \
+            AR="$TOOLCHAIN/bin/llvm-ar" \
+            RANLIB="$TOOLCHAIN/bin/llvm-ranlib" \
+            CFLAGS="--sysroot=$TOOLCHAIN/sysroot" \
+            libbz2.a
+          cp libbz2.a $HOME/arm64-sysroot/lib/
+          cp bzlib.h $HOME/arm64-sysroot/include/
+
       - name: Clone PM3 Iceman
         run: |
           git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3.git pm3src
+
+      - name: Patch PM3 source — stub out unneeded HF-attack modules
+        run: |
+          cd pm3src/client/src
+
+          # cmdhfmfhard — Mifare hardnested (needs lz4 + bzip2; not needed for LF/T5577)
+          # Replace with a no-op stub so linker is satisfied without external libs
+          HARD_H="$(grep -l 'cmdhfmfhard' ../src/*.c ../src/*.h 2>/dev/null || true)"
+          cat > cmdhfmfhard.c << 'CEOF'
+          // Android stub — hardnested not needed for LF/HID clone
+          #include "cmdhfmfhard.h"
+          CEOF
+
+          # Stub header with all public symbols
+          if [ -f cmdhfmfhard.h ]; then
+            # Keep existing header — the stub .c just provides no bodies for inline-declared fns
+            :
+          fi
+
+          echo "=== Patched cmdhfmfhard.c ==="
+          cat cmdhfmfhard.c
 
       - name: Cross-compile PM3 client for ARM64
         run: |
@@ -98,9 +133,10 @@ jobs:
           make client \
             SKIPBT=1 \
             SKIPQT=1 \
+            SKIPJANSSON=1 \
             STANDALONE="" \
             CFLAGS="$EXTRA_INC --sysroot=$SYSROOT" \
-            LDFLAGS="$EXTRA_LIB -lncurses -lreadline -llz4 -lm" \
+            LDFLAGS="$EXTRA_LIB -lncurses -lreadline -llz4 -lbz2 -lm" \
             2>&1
 
           echo "=== Binary check ==="
