@@ -125,11 +125,25 @@ jobs:
 
           echo "=== x86 flags removed ==="
 
-          # Skip reveng self-test (cross-compiled ARM64 binary can't run on x86_64 host)
-          REVENG_MK="pm3src/client/deps/reveng/Makefile"
-          if [ -f "$REVENG_MK" ]; then
-            sed -i 's|^\(\s*\)\./bmptst|\1echo "(skipped reveng self-test, cross-compile)"|g' "$REVENG_MK"
-            echo "=== reveng Makefile patched ==="
+          # Skip reveng self-test — ARM64 binary can't execute on x86_64 host
+          REVENG_MK=$(find pm3src -name "Makefile" | xargs grep -l "bmptst" 2>/dev/null | head -1)
+          echo "reveng Makefile: $REVENG_MK"
+          if [ -n "$REVENG_MK" ]; then
+            python3 - "$REVENG_MK" << 'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    lines = f.readlines()
+patched = []
+for line in lines:
+    if './bmptst' in line:
+        patched.append('\t@echo "skip reveng self-test (cross-compile)"\n')
+    else:
+        patched.append(line)
+with open(path, 'w') as f:
+    f.writelines(patched)
+print(f"Patched {path}")
+PYEOF
           fi
 
           cd pm3src/client/src
