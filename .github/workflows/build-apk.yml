@@ -3,58 +3,101 @@ name: Build Android APK
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:   # allows manual trigger from GitHub Actions tab
+  workflow_dispatch:
 
 jobs:
   build-pm3-arm64:
     name: Compile PM3 client for Android ARM64
     runs-on: ubuntu-22.04
-    outputs:
-      pm3_binary: proxmark3-arm64
 
     steps:
-      - name: Install Android NDK
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y wget unzip
-          NDK_VERSION=r25b
-          wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip
-          unzip -q android-ndk-${NDK_VERSION}-linux.zip
-          echo "NDK_HOME=$(pwd)/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
+          sudo apt-get install -y wget unzip git make gcc g++ \
+            pkg-config libusb-1.0-0-dev libz-dev
 
-      - name: Install PM3 build deps
+      - name: Install Android NDK r25b
         run: |
-          sudo apt-get install -y git make gcc g++ pkg-config \
-            libreadline-dev libssl-dev libz-dev libusb-1.0-0-dev
+          wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          unzip -q android-ndk-r25b-linux.zip
+          echo "NDK_HOME=$(pwd)/android-ndk-r25b" >> $GITHUB_ENV
+          echo "TOOLCHAIN=$(pwd)/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64" >> $GITHUB_ENV
 
-      - name: Clone PM3 Iceman fork
+      - name: Cross-compile ncurses for ARM64
+        run: |
+          wget -q https://invisible-mirror.net/archives/ncurses/ncurses-6.4.tar.gz
+          tar xzf ncurses-6.4.tar.gz
+          cd ncurses-6.4
+          ./configure \
+            --host=aarch64-linux-android \
+            --prefix=$HOME/arm64-sysroot \
+            CC="$TOOLCHAIN/bin/aarch64-linux-android26-clang" \
+            CFLAGS="--sysroot=$TOOLCHAIN/sysroot" \
+            --without-manpages --without-progs --without-tests \
+            --disable-shared --enable-static \
+            --disable-stripping \
+            --with-build-cc=gcc
+          make -j$(nproc)
+          make install
+
+      - name: Cross-compile readline for ARM64
+        run: |
+          wget -q https://ftp.gnu.org/gnu/readline/readline-8.2.tar.gz
+          tar xzf readline-8.2.tar.gz
+          cd readline-8.2
+          ./configure \
+            --host=aarch64-linux-android \
+            --prefix=$HOME/arm64-sysroot \
+            CC="$TOOLCHAIN/bin/aarch64-linux-android26-clang" \
+            CFLAGS="--sysroot=$TOOLCHAIN/sysroot -I$HOME/arm64-sysroot/include" \
+            LDFLAGS="-L$HOME/arm64-sysroot/lib" \
+            --disable-shared --enable-static \
+            bash_cv_wcwidth_broken=no \
+            bash_cv_func_sigsetjmp=yes
+          make -j$(nproc)
+          make install
+
+      - name: Clone PM3 Iceman
         run: |
           git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3.git pm3src
 
-      - name: Cross-compile PM3 client for Android ARM64
+      - name: Cross-compile PM3 client for ARM64
         run: |
-          TOOLCHAIN=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-          export CC=$TOOLCHAIN/bin/aarch64-linux-android26-clang
-          export CXX=$TOOLCHAIN/bin/aarch64-linux-android26-clang++
-          export AR=$TOOLCHAIN/bin/llvm-ar
-          export STRIP=$TOOLCHAIN/bin/llvm-strip
-          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+          SYSROOT="$TOOLCHAIN/sysroot"
+          EXTRA_INC="-I$HOME/arm64-sysroot/include"
+          EXTRA_LIB="-L$HOME/arm64-sysroot/lib"
+
+          export CC="$TOOLCHAIN/bin/aarch64-linux-android26-clang"
+          export CXX="$TOOLCHAIN/bin/aarch64-linux-android26-clang++"
+          export AR="$TOOLCHAIN/bin/llvm-ar"
+          export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
+          export STRIP="$TOOLCHAIN/bin/llvm-strip"
 
           cd pm3src
 
-          # Build client only, no firmware, no hardware deps
+          # PM3 requires Makefile.platform
+          echo "PLATFORM=PM3GENERIC"  > Makefile.platform
+          echo "STANDALONE="         >> Makefile.platform
+
+          # Point pkg-config away from host libs
+          export PKG_CONFIG_PATH="$HOME/arm64-sysroot/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$HOME/arm64-sysroot/lib/pkgconfig"
+
           make client \
             SKIPBT=1 \
             SKIPQT=1 \
-            SKIPJANSSON=1 \
-            PLATFORM=GENERIC \
-            LDFLAGS="-static" \
-            2>&1 | tail -50
+            STANDALONE="" \
+            CFLAGS="$EXTRA_INC --sysroot=$SYSROOT" \
+            LDFLAGS="$EXTRA_LIB -lncurses -lreadline -lm" \
+            2>&1
 
-          $STRIP client/proxmark3 || true
+          echo "=== Binary check ==="
           ls -lh client/proxmark3
+          file client/proxmark3
+          $STRIP client/proxmark3
 
-      - name: Upload PM3 binary
+      - name: Upload PM3 ARM64 binary
         uses: actions/upload-artifact@v4
         with:
           name: proxmark3-arm64
@@ -75,7 +118,7 @@ jobs:
           name: proxmark3-arm64
           path: .
 
-      - name: Make PM3 binary executable
+      - name: Mark binary executable
         run: chmod +x proxmark3
 
       - name: Set up Python 3.10
@@ -83,57 +126,63 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install system dependencies for Buildozer
+      - name: Install Buildozer system deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
             git zip unzip openjdk-17-jdk \
             python3-pip autoconf libtool pkg-config \
             zlib1g-dev libncurses5-dev libncursesw5-dev \
-            libtinfo5 cmake libffi-dev libssl-dev
+            libtinfo5 cmake libffi-dev libssl-dev \
+            build-essential
 
-      - name: Install Buildozer
+      - name: Install Buildozer + Cython
         run: |
           pip install --upgrade pip
-          pip install buildozer cython==0.29.37
+          pip install "buildozer>=1.5" "cython==0.29.37"
 
-      - name: Cache Buildozer global directory
+      - name: Cache Buildozer downloads
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}-v2
           restore-keys: |
             buildozer-${{ runner.os }}-
 
       - name: Build APK
-        run: |
-          buildozer -v android debug 2>&1 | tail -100
+        run: buildozer -v android debug 2>&1 | tee build.log | tail -150
 
-      - name: Find built APK
+      - name: Locate APK
+        id: find_apk
         run: |
-          APK_PATH=$(find bin/ -name "*.apk" | head -1)
-          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
-          echo "Built: $APK_PATH"
-          ls -lh $APK_PATH
+          APK=$(find bin/ -name "*.apk" 2>/dev/null | head -1)
+          if [ -z "$APK" ]; then
+            echo "APK not found — build log tail:"
+            tail -50 build.log
+            exit 1
+          fi
+          echo "APK_PATH=$APK" >> $GITHUB_ENV
+          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          ls -lh "$APK"
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: PM3-CloneAssistant-Android
           path: ${{ env.APK_PATH }}
           retention-days: 30
 
-      - name: Build summary
+      - name: Summary
         run: |
-          echo "## Build Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**APK:** \`${{ env.APK_PATH }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Download the APK from the **Artifacts** section above." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Install on Android" >> $GITHUB_STEP_SUMMARY
-          echo "1. Enable **Install unknown apps** in Android settings" >> $GITHUB_STEP_SUMMARY
-          echo "2. Transfer APK to phone" >> $GITHUB_STEP_SUMMARY
-          echo "3. Tap APK to install" >> $GITHUB_STEP_SUMMARY
-          echo "4. Connect PM3 via USB-OTG cable" >> $GITHUB_STEP_SUMMARY
-          echo "5. Open PM3 Clone Assistant" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## PM3 Clone Assistant — Android APK"
+            echo ""
+            echo "**Download:** click **PM3-CloneAssistant-Android** in Artifacts above"
+            echo ""
+            echo "### Install"
+            echo "1. Settings → **Install unknown apps** → allow"
+            echo "2. Copy APK to phone"
+            echo "3. Tap to install"
+            echo "4. Plug PM3 into phone via **USB-OTG cable**"
+            echo "5. Android will ask → **Open with PM3 Clone Assistant**"
+          } >> $GITHUB_STEP_SUMMARY
