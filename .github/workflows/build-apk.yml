@@ -137,11 +137,13 @@ jobs:
             grep -n 'bmptst' "$REVENG_MK" | head -10
           fi
 
-          # 3. Stub out cmdhfmfhard.c (needs lz4+bzip2, not needed for LF/HID)
+          # 3. Stub out HF-attack modules not needed for LF/HID clone
           HARD_C="pm3src/client/src/cmdhfmfhard.c"
           if [ -f "$HARD_C" ]; then
-            printf '// Android stub\n#include "cmdhfmfhard.h"\n' > "$HARD_C"
-            echo "cmdhfmfhard stubbed"
+            printf '#include "cmdhfmfhard.h"\n#include <stdint.h>\n#include <stdbool.h>\nvoid hardnested_print_progress(uint32_t a,const char *b,float c,uint64_t d){(void)a;(void)b;(void)c;(void)d;}\n' > "$HARD_C"
+            # Remove libhardnested.a from link (its symbols call mfnestedhard which we removed)
+            find pm3src/client -name "Makefile" | xargs sed -i 's|deps/hardnested/libhardnested\.a||g' 2>/dev/null || true
+            echo "cmdhfmfhard stubbed + hardnested removed from link"
           fi
 
       - name: Cross-compile PM3 client for ARM64
