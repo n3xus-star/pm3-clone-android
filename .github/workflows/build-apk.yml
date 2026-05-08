@@ -111,59 +111,29 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3.git pm3src
 
-      - name: Patch PM3 source — remove x86 flags + stub HF-attack modules
+      - name: Patch PM3 source for cross-compile
         run: |
-          # Remove x86-only CPU flags that ARM64 clang rejects
-          find pm3src -name "Makefile*" | xargs sed -i \
-            's/-mno-mmx//g;
-             s/-mno-sse2//g;
-             s/-mno-sse4[^ ]*//g;
-             s/-mno-avx[^ ]*//g;
-             s/-mno-avx512[^ ]*//g;
-             s/-msse[^ ]*//g;
-             s/-mavx[^ ]*//g' 2>/dev/null || true
+          # 1. Remove x86-only CPU flags invalid on ARM64
+          find pm3src -name "Makefile*" -exec sed -i 's/-mno-mmx//g; s/-mno-sse2//g; s/-mno-sse4[^ ]*//g; s/-mno-avx[^ ]*//g; s/-mno-avx512[^ ]*//g; s/-msse[^ ]*//g; s/-mavx[^ ]*//g' {} + 2>/dev/null || true
+          echo "x86 flags removed"
 
-          echo "=== x86 flags removed ==="
-
-          # Skip reveng self-test — ARM64 binary can't execute on x86_64 host
-          REVENG_MK=$(find pm3src -name "Makefile" | xargs grep -l "bmptst" 2>/dev/null | head -1)
-          echo "reveng Makefile: $REVENG_MK"
+          # 2. Skip reveng self-test (ARM64 binary cant execute on x86_64 host)
+          REVENG_MK=$(find pm3src -name "Makefile" -path "*/reveng/*" 2>/dev/null | head -1)
+          if [ -z "$REVENG_MK" ]; then
+            REVENG_MK=$(grep -rl "bmptst" pm3src --include="Makefile" 2>/dev/null | head -1)
+          fi
+          echo "reveng Makefile: ${REVENG_MK:-not found}"
           if [ -n "$REVENG_MK" ]; then
-            python3 - "$REVENG_MK" << 'PYEOF'
-import sys
-path = sys.argv[1]
-with open(path) as f:
-    lines = f.readlines()
-patched = []
-for line in lines:
-    if './bmptst' in line:
-        patched.append('\t@echo "skip reveng self-test (cross-compile)"\n')
-    else:
-        patched.append(line)
-with open(path, 'w') as f:
-    f.writelines(patched)
-print(f"Patched {path}")
-PYEOF
+            grep -v '\./bmptst' "$REVENG_MK" > "${REVENG_MK}.tmp" && mv "${REVENG_MK}.tmp" "$REVENG_MK"
+            echo "reveng patched"
           fi
 
-          cd pm3src/client/src
-
-          # cmdhfmfhard — Mifare hardnested (needs lz4 + bzip2; not needed for LF/T5577)
-          # Replace with a no-op stub so linker is satisfied without external libs
-          HARD_H="$(grep -l 'cmdhfmfhard' ../src/*.c ../src/*.h 2>/dev/null || true)"
-          cat > cmdhfmfhard.c << 'CEOF'
-          // Android stub — hardnested not needed for LF/HID clone
-          #include "cmdhfmfhard.h"
-          CEOF
-
-          # Stub header with all public symbols
-          if [ -f cmdhfmfhard.h ]; then
-            # Keep existing header — the stub .c just provides no bodies for inline-declared fns
-            :
+          # 3. Stub out cmdhfmfhard.c (needs lz4+bzip2, not needed for LF/HID)
+          HARD_C="pm3src/client/src/cmdhfmfhard.c"
+          if [ -f "$HARD_C" ]; then
+            printf '// Android stub\n#include "cmdhfmfhard.h"\n' > "$HARD_C"
+            echo "cmdhfmfhard stubbed"
           fi
-
-          echo "=== Patched cmdhfmfhard.c ==="
-          cat cmdhfmfhard.c
 
       - name: Cross-compile PM3 client for ARM64
         run: |
