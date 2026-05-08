@@ -146,12 +146,21 @@ jobs:
 
       - name: Cross-compile PM3 client for ARM64
         run: |
-          SYSROOT="$TOOLCHAIN/sysroot"
-          EXTRA_INC="-I$HOME/arm64-sysroot/include"
-          EXTRA_LIB="-L$HOME/arm64-sysroot/lib"
+          NDK_CC="$TOOLCHAIN/bin/aarch64-linux-android26-clang"
+          NDK_CXX="$TOOLCHAIN/bin/aarch64-linux-android26-clang++"
+          SYSROOT_LIB="$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android/26"
 
-          export CC="$TOOLCHAIN/bin/aarch64-linux-android26-clang"
-          export CXX="$TOOLCHAIN/bin/aarch64-linux-android26-clang++"
+          # Wrapper: suppress "unused argument" errors from x86-only flags PM3 Makefile adds
+          cat > /usr/local/bin/pm3-cc << WRAPPER
+          #!/bin/bash
+          exec "$NDK_CC" -Wno-unused-command-line-argument "\$@"
+          WRAPPER
+          cat > /usr/local/bin/pm3-cxx << WRAPPER
+          #!/bin/bash
+          exec "$NDK_CXX" -Wno-unused-command-line-argument "\$@"
+          WRAPPER
+          chmod +x /usr/local/bin/pm3-cc /usr/local/bin/pm3-cxx
+
           export AR="$TOOLCHAIN/bin/llvm-ar"
           export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
           export STRIP="$TOOLCHAIN/bin/llvm-strip"
@@ -164,10 +173,9 @@ jobs:
           export PKG_CONFIG_PATH="$HOME/arm64-sysroot/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$HOME/arm64-sysroot/lib/pkgconfig"
 
-          # All deps are now in NDK sysroot — no CFLAGS override needed
-          SYSROOT_LIB="$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android/26"
-
           make client \
+            CC=/usr/local/bin/pm3-cc \
+            CXX=/usr/local/bin/pm3-cxx \
             SKIPBT=1 \
             SKIPQT=1 \
             SKIPJANSSON=1 \
