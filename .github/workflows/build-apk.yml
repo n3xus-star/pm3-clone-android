@@ -122,9 +122,13 @@ jobs:
           REVENG_MK=$(find pm3src -name "Makefile" -path "*/reveng/*" 2>/dev/null | head -1)
           echo "reveng Makefile: ${REVENG_MK:-not found}"
           if [ -n "$REVENG_MK" ]; then
-            sed -i 's|^\s*\./\$@.*||g; s|^\s*\./bmptst.*||g' "$REVENG_MK"
-            echo "reveng patched:"
-            grep -n 'bmptst\|\.\/' "$REVENG_MK" | head -10
+            # Remove bmptst as prerequisite of libreveng.a (line: $(BINDIR)/$(LIB_A): $(BINDIR)/bmptst)
+            sed -i 's| \$(BINDIR)/bmptst||g' "$REVENG_MK"
+            # Delete lines that execute the test binary (./$@ or ./bmptst)
+            sed -i '/^\s*\.\/$@\s*$/d' "$REVENG_MK"
+            sed -i '/^\s*\.\/bmptst\s*$/d' "$REVENG_MK"
+            echo "reveng patched — remaining bmptst refs:"
+            grep -n 'bmptst' "$REVENG_MK" | head -10
           fi
 
           # 3. Stub out cmdhfmfhard.c (needs lz4+bzip2, not needed for LF/HID)
