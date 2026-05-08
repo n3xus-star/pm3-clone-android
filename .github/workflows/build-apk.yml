@@ -58,6 +58,19 @@ jobs:
           make -j$(nproc)
           make install
 
+      - name: Cross-compile lz4 for ARM64
+        run: |
+          wget -q https://github.com/lz4/lz4/releases/download/v1.9.4/lz4-1.9.4.tar.gz
+          tar xzf lz4-1.9.4.tar.gz
+          cd lz4-1.9.4
+          make -j$(nproc) \
+            CC="$TOOLCHAIN/bin/aarch64-linux-android26-clang" \
+            AR="$TOOLCHAIN/bin/llvm-ar" \
+            CFLAGS="--sysroot=$TOOLCHAIN/sysroot" \
+            BUILD_SHARED=no \
+            PREFIX=$HOME/arm64-sysroot \
+            install
+
       - name: Clone PM3 Iceman
         run: |
           git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3.git pm3src
@@ -76,11 +89,9 @@ jobs:
 
           cd pm3src
 
-          # PM3 requires Makefile.platform
           echo "PLATFORM=PM3GENERIC"  > Makefile.platform
           echo "STANDALONE="         >> Makefile.platform
 
-          # Point pkg-config away from host libs
           export PKG_CONFIG_PATH="$HOME/arm64-sysroot/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$HOME/arm64-sysroot/lib/pkgconfig"
 
@@ -89,7 +100,7 @@ jobs:
             SKIPQT=1 \
             STANDALONE="" \
             CFLAGS="$EXTRA_INC --sysroot=$SYSROOT" \
-            LDFLAGS="$EXTRA_LIB -lncurses -lreadline -lm" \
+            LDFLAGS="$EXTRA_LIB -lncurses -lreadline -llz4 -lm" \
             2>&1
 
           echo "=== Binary check ==="
