@@ -19,6 +19,7 @@ android.minapi = 26
 android.api = 33
 android.ndk = 25b
 android.sdk = 33
+android.build_tools_version = 33.0.2
 android.archs = arm64-v8a
 
 # Permissions
