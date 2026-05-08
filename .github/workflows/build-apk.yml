@@ -104,6 +104,12 @@ jobs:
           cp    $HOME/arm64-sysroot/lib/libbz2.a         $SYSROOT_LIB/
           cp    $HOME/arm64-sysroot/lib/liblz4.a         $SYSROOT_LIB/
 
+          # Create empty stub libs for Linux libs that are built into Android's libc
+          # (pthread, dl, rt, util are all part of Android bionic)
+          for lib in pthread dl rt util; do
+            $TOOLCHAIN/bin/llvm-ar rcs $SYSROOT_LIB/lib${lib}.a 2>/dev/null || true
+          done
+
           echo "=== NDK sysroot include check ==="
           ls $SYSROOT_INC/readline/ && ls $SYSROOT_INC/bzlib.h
 
