@@ -140,8 +140,9 @@ jobs:
           # 3. Stub out HF-attack modules not needed for LF/HID clone
           HARD_C="pm3src/client/src/cmdhfmfhard.c"
           if [ -f "$HARD_C" ]; then
-            # Stub: include header for prototypes, then provide empty bodies
-            printf '#ifdef __clang__\n#pragma clang diagnostic ignored "-Wunused-parameter"\n#pragma clang diagnostic ignored "-Wmissing-prototypes"\n#endif\n#include "cmdhfmfhard.h"\nvoid hardnested_print_progress(uint32_t a,const char *b,float c,uint64_t d){}\nint mfnestedhard(uint8_t a,uint8_t b,uint8_t *c,uint8_t d,uint8_t e,uint8_t *f,bool g,bool h,int i,int j,float *k,uint64_t *l){return -1;}\n' > "$HARD_C"
+            # Stub: minimal includes + exact matching signatures (no header include to avoid conflicts)
+            # Signatures matched from cmdhfmfhard.h in the PM3 source tree
+            printf '#include <stdint.h>\n#include <stdbool.h>\nvoid hardnested_print_progress(uint32_t a,const char *b,float c,uint64_t d){}\nint mfnestedhard(uint8_t a,uint8_t b,uint8_t *c,uint8_t d,uint8_t e,uint8_t *f,bool g,bool h,bool i,int j,uint64_t *k,char *l){return -1;}\n' > "$HARD_C"
             # Remove libhardnested.a from link (its object files depend on mfnestedhard)
             find pm3src/client -name "Makefile" | xargs sed -i 's|deps/hardnested/libhardnested\.a||g' 2>/dev/null || true
             echo "cmdhfmfhard stubbed + hardnested removed from link"
