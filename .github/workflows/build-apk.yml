@@ -130,12 +130,15 @@ jobs:
           export PKG_CONFIG_PATH="$HOME/arm64-sysroot/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$HOME/arm64-sysroot/lib/pkgconfig"
 
+          # CPPFLAGS appends to Makefile's CFLAGS (preserves bundled mbedtls paths)
+          # Don't override CFLAGS — that would strip PM3's own -I paths
+          export CPPFLAGS="$EXTRA_INC"
+
           make client \
             SKIPBT=1 \
             SKIPQT=1 \
             SKIPJANSSON=1 \
             STANDALONE="" \
-            CFLAGS="$EXTRA_INC --sysroot=$SYSROOT" \
             LDFLAGS="$EXTRA_LIB -lncurses -lreadline -llz4 -lbz2 -lm" \
             2>&1
 
