@@ -85,6 +85,28 @@ jobs:
           cp libbz2.a $HOME/arm64-sysroot/lib/
           cp bzlib.h $HOME/arm64-sysroot/include/
 
+      - name: Inject cross-compiled libs into NDK sysroot
+        run: |
+          # Copy headers + static libs into NDK sysroot so PM3's Makefile
+          # finds them without any CFLAGS override
+          SYSROOT_INC="$TOOLCHAIN/sysroot/usr/include"
+          SYSROOT_LIB="$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android/26"
+
+          cp -r $HOME/arm64-sysroot/include/readline     $SYSROOT_INC/
+          cp -r $HOME/arm64-sysroot/include/ncurses*     $SYSROOT_INC/ 2>/dev/null || true
+          cp    $HOME/arm64-sysroot/include/curses.h     $SYSROOT_INC/ 2>/dev/null || true
+          cp    $HOME/arm64-sysroot/include/bzlib.h      $SYSROOT_INC/
+          cp    $HOME/arm64-sysroot/include/lz4*.h       $SYSROOT_INC/
+
+          cp    $HOME/arm64-sysroot/lib/libreadline.a    $SYSROOT_LIB/
+          cp    $HOME/arm64-sysroot/lib/libhistory.a     $SYSROOT_LIB/
+          cp    $HOME/arm64-sysroot/lib/libncurses.a     $SYSROOT_LIB/
+          cp    $HOME/arm64-sysroot/lib/libbz2.a         $SYSROOT_LIB/
+          cp    $HOME/arm64-sysroot/lib/liblz4.a         $SYSROOT_LIB/
+
+          echo "=== NDK sysroot include check ==="
+          ls $SYSROOT_INC/readline/ && ls $SYSROOT_INC/bzlib.h
+
       - name: Clone PM3 Iceman
         run: |
           git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3.git pm3src
@@ -130,16 +152,15 @@ jobs:
           export PKG_CONFIG_PATH="$HOME/arm64-sysroot/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$HOME/arm64-sysroot/lib/pkgconfig"
 
-          # CPPFLAGS appends to Makefile's CFLAGS (preserves bundled mbedtls paths)
-          # Don't override CFLAGS — that would strip PM3's own -I paths
-          export CPPFLAGS="$EXTRA_INC"
+          # All deps are now in NDK sysroot — no CFLAGS override needed
+          SYSROOT_LIB="$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android/26"
 
           make client \
             SKIPBT=1 \
             SKIPQT=1 \
             SKIPJANSSON=1 \
             STANDALONE="" \
-            LDFLAGS="$EXTRA_LIB -lncurses -lreadline -llz4 -lbz2 -lm" \
+            LDFLAGS="-L$SYSROOT_LIB -lncurses -lreadline -llz4 -lbz2 -lm" \
             2>&1
 
           echo "=== Binary check ==="
