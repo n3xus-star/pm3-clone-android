@@ -118,14 +118,13 @@ jobs:
           echo "x86 flags removed"
 
           # 2. Skip reveng self-test (ARM64 binary cant execute on x86_64 host)
+          #    reveng Makefile uses "./$@" for the test, not "./bmptst"
           REVENG_MK=$(find pm3src -name "Makefile" -path "*/reveng/*" 2>/dev/null | head -1)
-          if [ -z "$REVENG_MK" ]; then
-            REVENG_MK=$(grep -rl "bmptst" pm3src --include="Makefile" 2>/dev/null | head -1)
-          fi
           echo "reveng Makefile: ${REVENG_MK:-not found}"
           if [ -n "$REVENG_MK" ]; then
-            grep -v '\./bmptst' "$REVENG_MK" > "${REVENG_MK}.tmp" && mv "${REVENG_MK}.tmp" "$REVENG_MK"
-            echo "reveng patched"
+            sed -i 's|^\s*\./\$@.*||g; s|^\s*\./bmptst.*||g' "$REVENG_MK"
+            echo "reveng patched:"
+            grep -n 'bmptst\|\.\/' "$REVENG_MK" | head -10
           fi
 
           # 3. Stub out cmdhfmfhard.c (needs lz4+bzip2, not needed for LF/HID)
