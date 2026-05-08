@@ -140,8 +140,8 @@ jobs:
           # 3. Stub out HF-attack modules not needed for LF/HID clone
           HARD_C="pm3src/client/src/cmdhfmfhard.c"
           if [ -f "$HARD_C" ]; then
-            # Stub: provide empty bodies for ALL exported functions
-            printf '#include <stdint.h>\n#include <stdbool.h>\n#ifdef __clang__\n#pragma clang diagnostic ignored "-Wunused-parameter"\n#endif\ntypedef unsigned char uint8_t;\nvoid hardnested_print_progress(uint32_t a,const char *b,float c,uint64_t d){}\nint mfnestedhard(uint8_t a,uint8_t b,uint8_t *c,uint8_t d,uint8_t e,uint8_t *f,bool g,bool h,int i,int j,float *k,uint64_t *l){return -1;}\n' > "$HARD_C"
+            # Stub: include header for prototypes, then provide empty bodies
+            printf '#ifdef __clang__\n#pragma clang diagnostic ignored "-Wunused-parameter"\n#pragma clang diagnostic ignored "-Wmissing-prototypes"\n#endif\n#include "cmdhfmfhard.h"\nvoid hardnested_print_progress(uint32_t a,const char *b,float c,uint64_t d){}\nint mfnestedhard(uint8_t a,uint8_t b,uint8_t *c,uint8_t d,uint8_t e,uint8_t *f,bool g,bool h,int i,int j,float *k,uint64_t *l){return -1;}\n' > "$HARD_C"
             # Remove libhardnested.a from link (its object files depend on mfnestedhard)
             find pm3src/client -name "Makefile" | xargs sed -i 's|deps/hardnested/libhardnested\.a||g' 2>/dev/null || true
             echo "cmdhfmfhard stubbed + hardnested removed from link"
@@ -153,15 +153,9 @@ jobs:
           NDK_CXX="$TOOLCHAIN/bin/aarch64-linux-android26-clang++"
           SYSROOT_LIB="$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android/26"
 
-          # Wrapper: suppress "unused argument" errors from x86-only flags PM3 Makefile adds
-          cat > /usr/local/bin/pm3-cc << WRAPPER
-          #!/bin/bash
-          exec "$NDK_CC" -Wno-unused-command-line-argument "\$@"
-          WRAPPER
-          cat > /usr/local/bin/pm3-cxx << WRAPPER
-          #!/bin/bash
-          exec "$NDK_CXX" -Wno-unused-command-line-argument "\$@"
-          WRAPPER
+          # Wrapper: suppress warnings that break cross-compile
+          printf '#!/bin/bash\nexec "%s" -Wno-unused-command-line-argument -Wno-missing-prototypes -Wno-missing-variable-declarations "$@"\n' "$NDK_CC" > /usr/local/bin/pm3-cc
+          printf '#!/bin/bash\nexec "%s" -Wno-unused-command-line-argument -Wno-missing-prototypes -Wno-missing-variable-declarations "$@"\n' "$NDK_CXX" > /usr/local/bin/pm3-cxx
           chmod +x /usr/local/bin/pm3-cc /usr/local/bin/pm3-cxx
 
           export AR="$TOOLCHAIN/bin/llvm-ar"
