@@ -239,20 +239,11 @@ jobs:
           restore-keys: |
             buildozer-${{ runner.os }}-
 
-      - name: Pre-accept Android SDK licenses
-        run: |
-          # Pre-create license hash files so sdkmanager doesn't prompt interactively
-          SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
-          mkdir -p "$SDK_DIR/licenses"
-          printf '\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4408b1c5b6c50640a3eeac8f898a' \
-            > "$SDK_DIR/licenses/android-sdk-license"
-          printf '\nd975f751698a77b662f1254ddbeed3901e976f5a' \
-            > "$SDK_DIR/licenses/android-sdk-preview-license"
-          printf '\n33b6a2b64607f11b759f320ef9dff4ae5c47d97a' \
-            > "$SDK_DIR/licenses/google-gdk-license"
-
       - name: Build APK
-        run: yes | buildozer -v android debug 2>&1 | tee build.log; tail -150 build.log
+        run: |
+          # 'yes' auto-accepts any sdkmanager license prompts during the build
+          yes | buildozer -v android debug 2>&1 | tee build.log || true
+          tail -150 build.log
 
       - name: Locate APK
         id: find_apk
