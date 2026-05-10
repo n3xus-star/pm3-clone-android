@@ -27,7 +27,7 @@ android.permissions = android.permission.INTERNET
 
 # USB Host feature + USB intent filter via manifest XML (--feature not supported in this p4a)
 android.meta_data = android.hardware.usb.action.USB_DEVICE_ATTACHED=@xml/device_filter
-android.extra_manifest_xml = <uses-feature android:name="android.hardware.usb.host" />
+android.extra_manifest_xml = %(source.dir)s/extra_manifest.xml
 
 # Extra Java files for USB BroadcastReceiver
 # android.add_src = java/
