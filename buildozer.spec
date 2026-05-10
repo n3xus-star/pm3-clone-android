@@ -25,9 +25,14 @@ android.archs = arm64-v8a
 # Permissions
 android.permissions = android.permission.INTERNET
 
-# USB Host feature + USB intent filter via manifest XML (--feature not supported in this p4a)
-android.meta_data = android.hardware.usb.action.USB_DEVICE_ATTACHED=@xml/device_filter
+# USB Host feature via manifest XML injection
 android.extra_manifest_xml = %(source.dir)s/extra_manifest.xml
+
+# USB device filter XML resource (referenced by meta_data below)
+android.res_xml = %(source.dir)s/res/xml/device_filter.xml
+
+# USB intent filter: auto-open when PM3 plugged in
+android.meta_data = android.hardware.usb.action.USB_DEVICE_ATTACHED=@xml/device_filter
 
 # Extra Java files for USB BroadcastReceiver
 # android.add_src = java/
