@@ -25,11 +25,9 @@ android.archs = arm64-v8a
 # Permissions
 android.permissions = android.permission.INTERNET
 
-# USB Host feature
-android.features = android.hardware.usb.host
-
-# USB intent filter (added in AndroidManifest via activity_intent_filter)
+# USB Host feature + USB intent filter via manifest XML (--feature not supported in this p4a)
 android.meta_data = android.hardware.usb.action.USB_DEVICE_ATTACHED=@xml/device_filter
+android.extra_manifest_xml = <uses-feature android:name="android.hardware.usb.host" />
 
 # Extra Java files for USB BroadcastReceiver
 # android.add_src = java/
