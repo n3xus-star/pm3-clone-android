@@ -240,7 +240,12 @@ jobs:
             buildozer-${{ runner.os }}-
 
       - name: Build APK
+        env:
+          JAVA_HOME: /usr/lib/jvm/temurin-17-jdk-amd64
         run: |
+          # Android Gradle plugin requires Java 17; runner default is Java 11
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
           # 'yes' auto-accepts any sdkmanager license prompts during the build
           yes | buildozer -v android debug 2>&1 | tee build.log || true
           tail -150 build.log
