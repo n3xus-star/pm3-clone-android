@@ -227,16 +227,35 @@ namespace AlmImageUploader
         }
 
         // ------------------------------------------------------------ entities
+        // fields an ALM version does not have, per collection (e.g. test-instance 'test-order' on ALM 25.x)
+        readonly Dictionary<string, HashSet<string>> missingFields = new Dictionary<string, HashSet<string>>();
+
         public List<Dictionary<string, string>> GetEntities(string collection, string query, string[] fields)
         {
+            HashSet<string> missing;
+            if (!missingFields.TryGetValue(collection, out missing))
+                missingFields[collection] = missing = new HashSet<string>();
             var result = new List<Dictionary<string, string>>();
             int start = 1;
             while (true)
             {
+                var use = fields == null ? null : fields.Where(f => !missing.Contains(f)).ToArray();
                 var url = Rest(collection) + "?page-size=1000&start-index=" + start;
                 if (query != null) url += "&query=" + Uri.EscapeDataString(query);
-                if (fields != null) url += "&fields=" + Uri.EscapeDataString(string.Join(",", fields));
+                if (use != null) url += "&fields=" + Uri.EscapeDataString(string.Join(",", use));
                 var r = Send("GET", url, null, null, null, true);
+                if (r.Status == 400 && use != null)
+                {
+                    // "Entity: test-instance doesn't have a field named: 'test-order'" -> drop it, start again
+                    var m = Regex.Match(r.Body ?? "", @"field named:?\s*'([^']+)'", RegexOptions.IgnoreCase);
+                    if (m.Success && use.Contains(m.Groups[1].Value) && m.Groups[1].Value != "id")
+                    {
+                        missing.Add(m.Groups[1].Value);
+                        result.Clear();
+                        start = 1;
+                        continue;
+                    }
+                }
                 Check(r, "read " + collection);
                 int total;
                 var batch = ParseEntities(r.Body, out total);
@@ -466,12 +485,19 @@ namespace AlmImageUploader
             }
             foreach (var ts in Sets)
             {
-                ts.Instances.Sort((a, b) => a.Order.CompareTo(b.Order));
-                var counts = ts.Instances.GroupBy(i => i.TestId).ToDictionary(g => g.Key, g => g.Count());
-                foreach (var i in ts.Instances)
+                // 'test-order' / 'name' are missing on some ALM versions: fall back to the id order
+                ts.Instances.Sort((a, b) => a.Order != b.Order ? a.Order.CompareTo(b.Order)
+                                                               : Util.ToInt(a.Id).CompareTo(Util.ToInt(b.Id)));
+                foreach (var g in ts.Instances.GroupBy(i => i.TestId))
                 {
-                    i.Repeated = counts[i.TestId] > 1;
-                    i.Label = i.Repeated && i.Name != "" ? i.Name : i.TestName;
+                    int k = 0;
+                    foreach (var i in g)
+                    {
+                        k++;
+                        i.Repeated = g.Count() > 1;
+                        if (i.Name == "") i.Name = "[" + k + "]" + i.TestName;   // ALM's own instance naming
+                        i.Label = i.Repeated ? i.Name : i.TestName;
+                    }
                 }
                 pathIndex[Key(ts.Path)] = ts;
                 var nk = Util.Norm(ts.Name);

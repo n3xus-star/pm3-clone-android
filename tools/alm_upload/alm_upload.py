@@ -85,6 +85,7 @@ class AlmClient:
         self.session.verify = verify
         self.session.headers["Accept"] = "application/json"
         self._login_args = None
+        self._missing_fields = {}  # fields this ALM version does not have, per collection
 
     # ---------------------------------------------------------------- auth
     def login(self, user=None, password=None, client_id=None, secret=None):
@@ -166,14 +167,22 @@ class AlmClient:
         """Return all entities of a collection as a list of {field: value} dicts."""
         url = "{}/rest/domains/{}/projects/{}/{}".format(
             self.base, self.domain, self.project, collection)
+        missing = self._missing_fields.setdefault(collection, set())
         out, start = [], 1
         while True:
+            use = [f for f in fields if f not in missing] if fields else None
             params = {"page-size": page_size, "start-index": start}
             if query:
                 params["query"] = query
-            if fields:
-                params["fields"] = ",".join(fields)
+            if use:
+                params["fields"] = ",".join(use)
             r = self._request("GET", url, params=params)
+            m = re.search(r"field named:?\s*'([^']+)'", r.text or "", re.I) if r.status_code == 400 else None
+            if m and use and m.group(1) in use and m.group(1) != "id":
+                # e.g. ALM 25.x: "test-instance doesn't have a field named: 'test-order'" -> drop it, restart
+                missing.add(m.group(1))
+                out, start = [], 1
+                continue
             self._check(r, "read " + collection)
             data = r.json()
             batch = [_fields(e) for e in data.get("entities", [])]
@@ -402,13 +411,17 @@ class TestLabFolder:
             if inst.get("cycle-id") in by_set:
                 by_set[inst["cycle-id"]]["instances"].append(inst)
         for ts in self.sets:
-            ts["instances"].sort(key=lambda i: int(i.get("test-order") or 0))
-            counts = {}
+            # 'test-order' / 'name' are missing on some ALM versions: fall back to the id order
+            ts["instances"].sort(key=lambda i: (int(i.get("test-order") or 0), int(i["id"])))
+            counts, seen = {}, {}
             for i in ts["instances"]:
-                counts[i["test-id"]] = counts.get(i["test-id"], 0) + 1
+                counts[i.get("test-id")] = counts.get(i.get("test-id"), 0) + 1
             for i in ts["instances"]:
-                i["repeated"] = counts[i["test-id"]] > 1
-                i["label"] = (i.get("name") or i["test-name"]) if i["repeated"] else i["test-name"]
+                seen[i.get("test-id")] = seen.get(i.get("test-id"), 0) + 1
+                if not i.get("name"):
+                    i["name"] = "[{}]{}".format(seen[i.get("test-id")], i["test-name"])  # ALM's own naming
+                i["repeated"] = counts[i.get("test-id")] > 1
+                i["label"] = i["name"] if i["repeated"] else i["test-name"]
 
         # local folder keys -> test sets: full sub folder path (exact) or set name alone
         self.path_index = {tuple(_norm(p) for p in ts["path"]): ts for ts in self.sets}
