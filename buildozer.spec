@@ -5,6 +5,8 @@ package.domain = com.pm3clone
 
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,so
+# Desktop-only helper scripts, not part of the app
+source.exclude_dirs = tools
 
 version = 1.0.0
 
