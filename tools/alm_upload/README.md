@@ -10,7 +10,13 @@ No Python and no installation needed: one `.exe` file.
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
-nothing to install and no Python. It is a C# port of the same logic
+nothing to install and no Python. It works step by step:
+
+1. Log in (ALM URL, username, password).
+2. Choose the domain and project from lists loaded from ALM.
+3. Choose the Test Lab folder with **Browse ALM...** (the Test Lab folder tree),
+   choose the image folder, then **Create image folders** → **Check** → **Upload**.
+ It is a C# port of the same logic
 (`AlmCore.cs`, `MainForm.cs`) and uses the Windows certificate store and proxy
 settings automatically.
 

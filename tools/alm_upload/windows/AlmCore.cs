@@ -22,20 +22,19 @@ namespace AlmImageUploader
     public class AlmClient
     {
         public readonly string Base;
-        readonly string domain, project;
+        public string Domain, Project;   // chosen after login
         readonly CookieContainer cookies = new CookieContainer();
         string user, password;
 
         public int Timeout = 120000;
+        public string User { get { return user; } }
 
-        public AlmClient(string baseUrl, string domain, string project, bool ignoreSsl)
+        public AlmClient(string baseUrl, bool ignoreSsl)
         {
             baseUrl = baseUrl.Trim().TrimEnd('/');
             if (!baseUrl.EndsWith("/qcbin", StringComparison.OrdinalIgnoreCase))
                 baseUrl += "/qcbin";
             Base = baseUrl;
-            this.domain = domain.Trim();
-            this.project = project.Trim();
 
             // TLS 1.2 is not on by default in older .NET Framework versions
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11;
@@ -63,15 +62,22 @@ namespace AlmImageUploader
                              SecurityElementEscape(password) + "</password></alm-authentication>";
                 r = Send("POST", Base + "/authentication-point/alm-authenticate",
                          Encoding.UTF8.GetBytes(xml), "application/xml", null, false);
-                Check(r, "login");
+                CheckLogin(r);
                 r = Send("POST", Base + "/rest/site-session", new byte[0], "application/xml", null, false);
                 if (r.Status >= 400 && r.Status != 404)
                     Check(r, "site-session");
             }
             else
             {
-                Check(r, "login");
+                CheckLogin(r);
             }
+        }
+
+        static void CheckLogin(Response r)
+        {
+            if (r.Status == 401 || r.Status == 403)
+                throw new AlmException("wrong username or password (HTTP " + r.Status + ")");
+            Check(r, "login");
         }
 
         public void Logout()
@@ -165,8 +171,59 @@ namespace AlmImageUploader
 
         string Rest(string collection)
         {
+            if (string.IsNullOrEmpty(Domain) || string.IsNullOrEmpty(Project))
+                throw new AlmException("choose a domain and project first");
             return string.Format("{0}/rest/domains/{1}/projects/{2}/{3}", Base,
-                Uri.EscapeDataString(domain), Uri.EscapeDataString(project), collection);
+                Uri.EscapeDataString(Domain), Uri.EscapeDataString(Project), collection);
+        }
+
+        // ------------------------------------------------- domains / projects
+        public List<string> GetDomains()
+        {
+            var r = Send("GET", Base + "/rest/domains", null, null, null, true);
+            Check(r, "list domains");
+            return NamesOf(r.Body, "Domain");
+        }
+
+        public List<string> GetProjects(string domain)
+        {
+            var r = Send("GET", Base + "/rest/domains/" + Uri.EscapeDataString(domain) + "/projects",
+                         null, null, null, true);
+            Check(r, "list projects of " + domain);
+            return NamesOf(r.Body, "Project");
+        }
+
+        static List<string> NamesOf(string xml, string tag)
+        {
+            var doc = new XmlDocument();
+            doc.LoadXml(xml);
+            return doc.GetElementsByTagName(tag).Cast<XmlElement>()
+                      .Select(e => e.GetAttribute("Name")).Where(n => n != "")
+                      .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        // ------------------------------------------------ Test Lab folder tree
+        static readonly string[] TreeFields = { "id", "name", "parent-id" };
+
+        /// Id of the Test Lab "Root" folder (0 on standard ALM installs).
+        public string GetTestLabRootId()
+        {
+            var zero = GetEntities("test-set-folders", "{id[0]}", TreeFields);
+            if (zero.Count > 0) return "0";
+            var roots = GetEntities("test-set-folders", "{name['Root']}", TreeFields);
+            return roots.Count > 0 ? roots[0]["id"] : "0";
+        }
+
+        public List<Dictionary<string, string>> GetChildFolders(string folderId)
+        {
+            return GetEntities("test-set-folders", "{parent-id[" + folderId + "]}", TreeFields)
+                   .OrderBy(f => f.ContainsKey("name") ? f["name"] : "", StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        public List<Dictionary<string, string>> GetTestSetsIn(string folderId)
+        {
+            return GetEntities("test-sets", "{parent-id[" + folderId + "]}", TreeFields)
+                   .OrderBy(f => f.ContainsKey("name") ? f["name"] : "", StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         // ------------------------------------------------------------ entities
