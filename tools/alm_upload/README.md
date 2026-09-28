@@ -6,7 +6,21 @@ It covers every test set under one Test Lab folder in a single run.
 
 No Python and no installation needed: one `.exe` file.
 
-## Download
+## Windows program (single .exe, recommended)
+
+`windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
+It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
+nothing to install and no Python. It is a C# port of the same logic
+(`AlmCore.cs`, `MainForm.cs`) and uses the Windows certificate store and proxy
+settings automatically.
+
+Build it on Linux or macOS with Mono (`apt install mono-devel` / `brew install mono`):
+
+```bash
+windows/build.sh        # -> windows/ALM-Image-Uploader.exe
+```
+
+## Download (Python build via GitHub Actions)
 
 1. Open the repository on GitHub → **Actions** → **Build ALM Image Uploader (Windows)**.
 2. Open the latest green run → **Artifacts** → download `ALM-Image-Uploader-windows`.
