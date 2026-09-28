@@ -1,5 +1,9 @@
 # ALM Image Uploader - changelog
 
+## 2.1.0
+- "Tick all" next to "Untick all": ticks every test case the tree shows (respects Search / Show).
+- Images: "Select all" and "Deselect all" (respect Search / Show); Ctrl+A still selects all.
+
 ## 2.0.0
 - Images: click a column title (Image / Test case / Status) to sort, again to reverse.
   Sorting is natural: "1.9" comes before "1.10".

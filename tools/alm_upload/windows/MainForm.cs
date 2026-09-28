@@ -39,7 +39,7 @@ namespace AlmImageUploader
         bool imgSortDesc;
         AlmClient.FieldDef commentField;   // the "Comments" column, shown as [NA] etc. in the tree
         Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
-               btnUntick, btnSetField, btnDownload;
+               btnUntick, btnTickAll, btnSetField, btnDownload, btnSelectAll, btnDeselectAll;
         Label lblTicked;
         ListView lvImages;
         PictureBox picPreview;
@@ -434,14 +434,19 @@ namespace AlmImageUploader
             p.RowStyles[4] = new RowStyle(SizeType.Percent, 42);
             p.Controls.Add(new Label { Text = "Images", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 0) }, 0, 0);
 
-            txtImgFilter = new TextBox { Width = 170, Margin = new Padding(3, 4, 3, 3) };
-            cboImgFilter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170, Margin = new Padding(3, 4, 3, 3) };
+            txtImgFilter = new TextBox { Width = 105, Margin = new Padding(3, 4, 3, 3) };
+            cboImgFilter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150, Margin = new Padding(3, 4, 3, 3) };
             cboImgFilter.Items.AddRange(new object[] { "All images", "Not assigned", "With suggestion", "Assigned, not uploaded", "Uploaded" });
             cboImgFilter.SelectedIndex = 0;
             txtImgFilter.TextChanged += (s, e) => RefreshImages();
             cboImgFilter.SelectedIndexChanged += (s, e) => RefreshImages();
+            btnSelectAll = B("Select all");
+            btnDeselectAll = B("Deselect all");
+            btnSelectAll.Click += (s, e) => SelectAllImages(true);
+            btnDeselectAll.Click += (s, e) => SelectAllImages(false);
             p.Controls.Add(Flow(new Label { Text = "Search:", AutoSize = true, Margin = new Padding(3, 7, 0, 3) }, txtImgFilter,
-                                new Label { Text = "Show:", AutoSize = true, Margin = new Padding(8, 7, 0, 3) }, cboImgFilter), 0, 1);
+                                new Label { Text = "Show:", AutoSize = true, Margin = new Padding(8, 7, 0, 3) }, cboImgFilter,
+                                btnSelectAll, btnDeselectAll), 0, 1);
 
             lvImages = new ListView
             {
@@ -460,10 +465,7 @@ namespace AlmImageUploader
                 RefreshImages();
             };
             lvImages.ItemDrag += (s, e) => { if (lvImages.SelectedItems.Count > 0) lvImages.DoDragDrop(SelectedImages(), DragDropEffects.Copy); };
-            lvImages.KeyDown += (s, e) =>
-            {
-                if (e.Control && e.KeyCode == Keys.A) { foreach (ListViewItem it in lvImages.Items) it.Selected = true; }
-            };
+            lvImages.KeyDown += (s, e) => { if (e.Control && e.KeyCode == Keys.A) SelectAllImages(true); };
             p.Controls.Add(lvImages, 0, 2);
 
             lblPreview = new Label { AutoSize = true, Margin = new Padding(3, 6, 3, 0), MaximumSize = new Size(560, 0) };
@@ -524,6 +526,8 @@ namespace AlmImageUploader
 
             btnAssign = B("<  Assign selected images to ticked test cases", true);
             btnAssign.Click += (s, e) => AssignSelectedTo(Targets());
+            btnTickAll = B("Tick all");
+            btnTickAll.Click += (s, e) => TickAllShown();
             btnUntick = B("Untick all");
             btnUntick.Click += (s, e) => { ticked.Clear(); RefreshTree(); UpdateTicked(); };
             btnSetField = B("Set field (e.g. Comments)...");
@@ -531,7 +535,7 @@ namespace AlmImageUploader
             btnDownload = B("Download attachments...");
             btnDownload.Click += (s, e) => OpenDownload();
             lblTicked = new Label { AutoSize = true, Margin = new Padding(6, 9, 3, 3), ForeColor = SystemColors.GrayText };
-            p.Controls.Add(Flow(btnAssign, btnUntick, btnSetField, btnDownload, lblTicked), 0, 3);
+            p.Controls.Add(Flow(btnAssign, btnTickAll, btnUntick, btnSetField, btnDownload, lblTicked), 0, 3);
 
             lblCase = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 0), Text = "Images in the selected test case:" };
             p.Controls.Add(lblCase, 0, 4);
@@ -653,7 +657,8 @@ namespace AlmImageUploader
 
         void EnableAssignUi(bool on)
         {
-            foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnSetField, btnDownload })
+            foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnTickAll, btnSetField, btnDownload,
+                                              btnSelectAll, btnDeselectAll })
                 c.Enabled = on;
         }
 
@@ -1040,6 +1045,26 @@ namespace AlmImageUploader
             foreach (var img in images) img.Assigned.RemoveAll(a => !img.Uploaded.Contains(a.Id));
             Log(string.Format("Cleared {0} assignment(s).", n));
             AfterChange(images);
+        }
+
+        /// Ticks every test case the tree shows now (so a Search / Show filter narrows it down).
+        void TickAllShown()
+        {
+            if (lab == null) return;
+            foreach (TreeNode sn in tree.Nodes)
+                foreach (TreeNode cn in sn.Nodes)
+                    ticked.Add((TestInstance)cn.Tag);
+            RefreshTree();
+            UpdateTicked();
+        }
+
+        /// Selects / deselects every image the list shows now (after Search / Show).
+        void SelectAllImages(bool select)
+        {
+            lvImages.BeginUpdate();
+            foreach (ListViewItem it in lvImages.Items) it.Selected = select;
+            lvImages.EndUpdate();
+            lvImages.Focus();
         }
 
         void OnNodeChecked(object sender, TreeViewEventArgs e)
