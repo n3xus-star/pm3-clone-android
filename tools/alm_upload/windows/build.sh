@@ -20,5 +20,5 @@ mcs -target:winexe -optimize+ -langversion:7 -nostdlib -noconfig \
     -out:ALM-Image-Uploader.exe \
     -r:"$REFS/mscorlib.dll" -r:"$REFS/System.dll" -r:"$REFS/System.Core.dll" -r:"$REFS/System.Xml.dll" \
     -r:"$REFS/System.Windows.Forms.dll" -r:"$REFS/System.Drawing.dll" \
-    AlmCore.cs MainForm.cs
+    AssemblyInfo.cs AlmCore.cs MainForm.cs
 echo "Built $(pwd)/ALM-Image-Uploader.exe"

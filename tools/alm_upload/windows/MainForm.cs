@@ -17,7 +17,7 @@ namespace AlmImageUploader
     {
         const string AppName = "ALM Image Uploader";
         const string SettingsFile = "ALMImageUploader.ini";
-        static readonly Color Done = Color.ForestGreen, Hint = Color.SteelBlue, Warn = Color.DarkOrange;
+        static readonly Color Done = Color.ForestGreen, Hint = Color.SteelBlue, Warn = Color.DarkOrange, NaColor = Color.SlateGray;
 
         // step 1
         Panel pageLogin;
@@ -34,7 +34,10 @@ namespace AlmImageUploader
         Panel pageWork;
         Label lblWho3, lblSummary, lblPreview, lblCase;
         TextBox txtLabFolder, txtFolder, txtImgFilter, txtTestFilter, txtLog;
-        CheckBox chkOnlyUnassigned, chkHideUploaded;
+        ComboBox cboImgFilter, cboTreeSort, cboTreeFilter;
+        int imgSortCol;           // 0 image, 1 test case, 2 status
+        bool imgSortDesc;
+        AlmClient.FieldDef commentField;   // the "Comments" column, shown as [NA] etc. in the tree
         Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
                btnUntick, btnSetField, btnDownload;
         Label lblTicked;
@@ -60,7 +63,7 @@ namespace AlmImageUploader
 
         public MainForm()
         {
-            Text = AppName;
+            Text = AppName + "  v" + AppInfo.Version;
             Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(1180, 820);
@@ -173,7 +176,7 @@ namespace AlmImageUploader
             TableLayoutPanel c;
             Label sub;
             pageLogin = Card("Step 1 of 3:  Log in to ALM", out sub, out c);
-            sub.Text = "Enter the ALM address and your ALM username and password.";
+            sub.Text = "Enter the ALM address and your ALM username and password.      (version " + AppInfo.Version + ")";
             c.Controls.Add(L("ALM URL"), 0, 2);
             c.Controls.Add(txtUrl = T(), 1, 2);
             var eg = L("e.g. https://alm.company.com/qcbin", true);
@@ -432,13 +435,13 @@ namespace AlmImageUploader
             p.Controls.Add(new Label { Text = "Images", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 0) }, 0, 0);
 
             txtImgFilter = new TextBox { Width = 170, Margin = new Padding(3, 4, 3, 3) };
-            chkOnlyUnassigned = new CheckBox { Text = "Only not assigned", AutoSize = true, Margin = new Padding(8, 6, 3, 3) };
-            chkHideUploaded = new CheckBox { Text = "Hide uploaded", AutoSize = true, Margin = new Padding(8, 6, 3, 3) };
+            cboImgFilter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170, Margin = new Padding(3, 4, 3, 3) };
+            cboImgFilter.Items.AddRange(new object[] { "All images", "Not assigned", "With suggestion", "Assigned, not uploaded", "Uploaded" });
+            cboImgFilter.SelectedIndex = 0;
             txtImgFilter.TextChanged += (s, e) => RefreshImages();
-            chkOnlyUnassigned.CheckedChanged += (s, e) => RefreshImages();
-            chkHideUploaded.CheckedChanged += (s, e) => RefreshImages();
-            p.Controls.Add(Flow(new Label { Text = "Search:", AutoSize = true, Margin = new Padding(3, 7, 0, 3) },
-                                txtImgFilter, chkOnlyUnassigned, chkHideUploaded), 0, 1);
+            cboImgFilter.SelectedIndexChanged += (s, e) => RefreshImages();
+            p.Controls.Add(Flow(new Label { Text = "Search:", AutoSize = true, Margin = new Padding(3, 7, 0, 3) }, txtImgFilter,
+                                new Label { Text = "Show:", AutoSize = true, Margin = new Padding(8, 7, 0, 3) }, cboImgFilter), 0, 1);
 
             lvImages = new ListView
             {
@@ -449,6 +452,13 @@ namespace AlmImageUploader
             lvImages.Columns.Add("Test case (assigned / suggested)", 260);
             lvImages.Columns.Add("Status", 80);
             lvImages.SelectedIndexChanged += (s, e) => OnImageSelected();
+            lvImages.ColumnClick += (s, e) =>
+            {
+                // click a column title to sort by it, again to reverse
+                imgSortDesc = imgSortCol == e.Column && !imgSortDesc;
+                imgSortCol = e.Column;
+                RefreshImages();
+            };
             lvImages.ItemDrag += (s, e) => { if (lvImages.SelectedItems.Count > 0) lvImages.DoDragDrop(SelectedImages(), DragDropEffects.Copy); };
             lvImages.KeyDown += (s, e) =>
             {
@@ -478,9 +488,18 @@ namespace AlmImageUploader
             p.RowStyles[2] = new RowStyle(SizeType.Percent, 68);
             p.RowStyles[5] = new RowStyle(SizeType.Percent, 32);
             p.Controls.Add(new Label { Text = "Test sets and test cases", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 0) }, 0, 0);
-            txtTestFilter = new TextBox { Width = 220, Margin = new Padding(3, 4, 3, 3) };
+            txtTestFilter = new TextBox { Width = 110, Margin = new Padding(3, 4, 3, 3) };
             txtTestFilter.TextChanged += (s, e) => RefreshTree();
-            p.Controls.Add(Flow(new Label { Text = "Search:", AutoSize = true, Margin = new Padding(3, 7, 0, 3) }, txtTestFilter), 0, 1);
+            cboTreeSort = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 125, Margin = new Padding(3, 4, 3, 3) };
+            cboTreeSort.Items.AddRange(new object[] { SortNameAsc, SortNameDesc, SortMostImages, SortFewestImages, SortId, SortAlm });
+            cboTreeSort.SelectedIndex = 0;
+            cboTreeSort.SelectedIndexChanged += (s, e) => RefreshTree();
+            cboTreeFilter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, Margin = new Padding(3, 4, 3, 3) };
+            cboTreeFilter.SelectedIndexChanged += (s, e) => RefreshTree();
+            FillTreeFilter();
+            p.Controls.Add(Flow(new Label { Text = "Search:", AutoSize = true, Margin = new Padding(3, 7, 0, 3) }, txtTestFilter,
+                                new Label { Text = "Sort:", AutoSize = true, Margin = new Padding(6, 7, 0, 3) }, cboTreeSort,
+                                new Label { Text = "Show:", AutoSize = true, Margin = new Padding(6, 7, 0, 3) }, cboTreeFilter), 0, 1);
 
             tree = new TreeView { Dock = DockStyle.Fill, HideSelection = false, AllowDrop = true, CheckBoxes = true };
             tree.AfterSelect += (s, e) => OnCaseSelected();
@@ -571,7 +590,19 @@ namespace AlmImageUploader
             RunBackground(() =>
             {
                 Log("Reading Test Lab folder '" + labText + "' ...");
-                var l = new TestLabFolder(client, labArg);
+                AlmClient.FieldDef cf = null;
+                try
+                {
+                    cf = client.GetFieldDefs("test-instance")
+                               .FirstOrDefault(f => f.Active && f.Label.IndexOf("comment", StringComparison.OrdinalIgnoreCase) >= 0);
+                }
+                catch (Exception ex)
+                {
+                    if (!(ex is AlmException || ex is WebException || ex is System.Xml.XmlException)) throw;
+                    Log("Could not read the test case fields (the Comments indicator is off): " + ex.Message);
+                }
+                var l = new TestLabFolder(client, labArg, cf == null ? null : new[] { cf.Name });
+                if (cf != null) Log("Showing the '" + cf.Label + "' column of each test case, e.g. [NA].");
                 Log(string.Format("Found {0} test set(s) with {1} test case(s).", l.Sets.Count, l.InstanceCount));
                 var imgs = Util.ListImages(folder).Select(f => new ImageItem { File = f, Rel = Util.RelPath(folder, f) }).ToList();
                 AssignmentStore.Load(folder, domain, project, l, imgs);
@@ -593,6 +624,8 @@ namespace AlmImageUploader
                     imageRoot = folder;
                     images = imgs;
                     ticked.Clear();
+                    commentField = cf;
+                    FillTreeFilter();
                     if (fromFolders > 0) SaveAssignments();
                     EnableAssignUi(true);
                     RefreshImages();
@@ -606,6 +639,7 @@ namespace AlmImageUploader
         void ClearLoaded()
         {
             lab = null;
+            commentField = null;
             images = new List<ImageItem>();
             ticked.Clear();
             if (lvImages == null) return;
@@ -670,17 +704,50 @@ namespace AlmImageUploader
             var selected = new HashSet<ImageItem>(SelectedImages());
             lvImages.BeginUpdate();
             lvImages.Items.Clear();
+            var rows = new List<ListViewItem>();
             foreach (var img in images)
             {
-                if (chkOnlyUnassigned.Checked && img.Assigned.Count > 0) continue;
-                if (chkHideUploaded.Checked && img.FullyUploaded) continue;
+                if (!ImageFilter(img)) continue;
                 if (q != "" && !Util.Norm(img.Rel).Contains(q)) continue;
                 var it = new ListViewItem(new[] { img.Rel, "", "" }) { Tag = img };
                 FillImageItem(it);
-                lvImages.Items.Add(it);
-                if (selected.Contains(img)) it.Selected = true;
+                rows.Add(it);
             }
+            Comparison<ListViewItem> cmp;
+            if (imgSortCol == 2)
+                cmp = (x, y) => StatusRank((ImageItem)x.Tag).CompareTo(StatusRank((ImageItem)y.Tag));
+            else
+                cmp = (x, y) => Util.NaturalCompare(x.SubItems[imgSortCol].Text, y.SubItems[imgSortCol].Text);
+            rows.Sort((x, y) =>
+            {
+                int c = cmp(x, y);
+                if (c == 0) c = Util.NaturalCompare(x.Text, y.Text);
+                return imgSortDesc ? -c : c;
+            });
+            lvImages.Items.AddRange(rows.ToArray());
+            foreach (var it in rows) if (selected.Contains((ImageItem)it.Tag)) it.Selected = true;
+            string[] titles = { "Image", "Test case (assigned / suggested)", "Status" };
+            for (int c = 0; c < titles.Length; c++)
+                lvImages.Columns[c].Text = titles[c] + (c == imgSortCol ? (imgSortDesc ? "  \u25BC" : "  \u25B2") : "");
             lvImages.EndUpdate();
+        }
+
+        bool ImageFilter(ImageItem img)
+        {
+            switch (cboImgFilter.SelectedIndex)
+            {
+                case 1: return img.Assigned.Count == 0;
+                case 2: return img.Assigned.Count == 0 && img.Suggestion != null;
+                case 3: return img.Assigned.Count > 0 && !img.FullyUploaded;
+                case 4: return img.FullyUploaded;
+                default: return true;
+            }
+        }
+
+        static int StatusRank(ImageItem img)
+        {
+            if (img.Assigned.Count == 0) return img.Suggestion == null ? 0 : 1;   // not assigned, suggested
+            return img.FullyUploaded ? 3 : 2;                                      // to upload, uploaded
         }
 
         void RefreshImageRows(IEnumerable<ImageItem> changed)
@@ -695,17 +762,111 @@ namespace AlmImageUploader
             return images.Count(i => i.Assigned.Contains(inst));
         }
 
+        string Comment(TestInstance inst)
+        {
+            string v;
+            return commentField != null && inst.Values.TryGetValue(commentField.Name, out v) ? (v ?? "").Trim() : "";
+        }
+
+        bool IsNA(TestInstance inst)
+        {
+            var c = Comment(inst).Replace("/", "");
+            return c.Equals("NA", StringComparison.OrdinalIgnoreCase);
+        }
+
         string NodeText(TestInstance inst)
         {
             int n = CountFor(inst);
-            return n == 0 ? inst.Label : string.Format("{0}   ({1} image{2})", inst.Label, n, n == 1 ? "" : "s");
+            var text = n == 0 ? inst.Label : string.Format("{0}   ({1} image{2})", inst.Label, n, n == 1 ? "" : "s");
+            var c = Comment(inst);
+            return c == "" ? text : text + "   [" + c + "]";
         }
 
         string NodeText(TestSet ts)
         {
             int n = ts.Instances.Count(i => CountFor(i) > 0);
-            return string.Format("{0}   ({1}/{2} test cases have images)", ts.PathText, n, ts.Instances.Count);
+            int na = ts.Instances.Count(IsNA);
+            return string.Format("{0}   ({1}/{2} test cases have images{3})", ts.PathText, n, ts.Instances.Count,
+                                 na > 0 ? ",  " + na + " NA" : "");
         }
+
+        Color CaseColor(TestInstance inst)
+        {
+            if (CountFor(inst) > 0) return Done;
+            return IsNA(inst) ? NaColor : SystemColors.WindowText;
+        }
+
+        // ---- tree sorting and filtering
+        const string SortNameAsc = "Name A to Z", SortNameDesc = "Name Z to A", SortMostImages = "Most images first",
+                     SortFewestImages = "Fewest images first", SortId = "Test case ID", SortAlm = "ALM test order";
+
+        class TreeFilter
+        {
+            public string Text;
+            public Func<TestInstance, bool> Match;
+            public override string ToString() { return Text; }
+        }
+
+        void FillTreeFilter()
+        {
+            var keep = cboTreeFilter.SelectedItem == null ? null : cboTreeFilter.SelectedItem.ToString();
+            var items = new List<TreeFilter>
+            {
+                new TreeFilter { Text = "All test cases", Match = i => true },
+                new TreeFilter { Text = "With images", Match = i => CountFor(i) > 0 },
+                new TreeFilter { Text = "Without images", Match = i => CountFor(i) == 0 },
+                new TreeFilter { Text = "Ticked", Match = i => ticked.Contains(i) },
+                new TreeFilter { Text = "Waiting for upload", Match = i => images.Any(img => img.Assigned.Contains(i) && !img.Uploaded.Contains(i.Id)) },
+            };
+            if (commentField != null && lab != null)
+            {
+                var label = commentField.Label;
+                items.Add(new TreeFilter { Text = label + ": NA", Match = IsNA });
+                items.Add(new TreeFilter { Text = label + ": not NA", Match = i => !IsNA(i) });
+                items.Add(new TreeFilter { Text = label + ": (empty)", Match = i => Comment(i) == "" });
+                foreach (var v in lab.Sets.SelectMany(s => s.Instances).Select(Comment)
+                                     .Where(v => v != "" && !v.Replace("/", "").Equals("NA", StringComparison.OrdinalIgnoreCase))
+                                     .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(v => v, StringComparer.OrdinalIgnoreCase))
+                {
+                    var value = v;
+                    items.Add(new TreeFilter { Text = label + ": " + value, Match = i => Comment(i).Equals(value, StringComparison.OrdinalIgnoreCase) });
+                }
+            }
+            cboTreeFilter.BeginUpdate();
+            cboTreeFilter.Items.Clear();
+            cboTreeFilter.Items.AddRange(items.ToArray());
+            cboTreeFilter.EndUpdate();
+            int idx = items.FindIndex(f => f.Text == keep);
+            cboTreeFilter.SelectedIndex = idx >= 0 ? idx : 0;
+        }
+
+        IEnumerable<TestInstance> SortCases(IEnumerable<TestInstance> cases, Dictionary<TestInstance, int> counts)
+        {
+            switch (cboTreeSort.SelectedItem as string)
+            {
+                case SortNameDesc: return cases.OrderByDescending(i => i.Label, Natural);
+                case SortMostImages: return cases.OrderByDescending(i => counts[i]).ThenBy(i => i.Label, Natural);
+                case SortFewestImages: return cases.OrderBy(i => counts[i]).ThenBy(i => i.Label, Natural);
+                case SortId: return cases.OrderBy(i => Util.ToInt(i.Id));
+                case SortAlm: return cases;
+                default: return cases.OrderBy(i => i.Label, Natural);
+            }
+        }
+
+        IEnumerable<TestSet> SortSets(IEnumerable<TestSet> sets, Dictionary<TestInstance, int> counts)
+        {
+            Func<TestSet, int> withImages = ts => ts.Instances.Count(i => counts[i] > 0);
+            switch (cboTreeSort.SelectedItem as string)
+            {
+                case SortNameDesc: return sets.OrderByDescending(s => s.PathText, Natural);
+                case SortMostImages: return sets.OrderByDescending(withImages).ThenBy(s => s.PathText, Natural);
+                case SortFewestImages: return sets.OrderBy(withImages).ThenBy(s => s.PathText, Natural);
+                case SortId: return sets.OrderBy(s => Util.ToInt(s.Id));
+                default: return sets.OrderBy(s => s.PathText, Natural);
+            }
+        }
+
+        static readonly IComparer<string> Natural = Comparer<string>.Create(Util.NaturalCompare);
 
         void RefreshTree()
         {
@@ -713,13 +874,17 @@ namespace AlmImageUploader
             var q = Util.Norm(txtTestFilter.Text);
             var selected = tree.SelectedNode == null ? null : tree.SelectedNode.Tag;
             var expanded = new HashSet<object>(tree.Nodes.Cast<TreeNode>().Where(n => n.IsExpanded).Select(n => n.Tag));
+            var filter = cboTreeFilter.SelectedItem as TreeFilter;
+            var counts = lab.Sets.SelectMany(s => s.Instances).ToDictionary(i => i, CountFor);
+            bool narrowed = q != "" || (filter != null && cboTreeFilter.SelectedIndex > 0);
             tree.BeginUpdate();
             tree.Nodes.Clear();
             TreeNode select = null;
-            foreach (var ts in lab.Sets)
+            foreach (var ts in SortSets(lab.Sets, counts))
             {
                 bool setMatch = q == "" || Util.Norm(ts.PathText).Contains(q);
-                var cases = ts.Instances.Where(i => setMatch || Util.Norm(i.Label).Contains(q)).ToList();
+                var cases = SortCases(ts.Instances.Where(i => (setMatch || Util.Norm(i.Label).Contains(q))
+                                                              && (filter == null || filter.Match(i))), counts).ToList();
                 if (cases.Count == 0) continue;
                 var sn = tree.Nodes.Add(NodeText(ts));
                 sn.Tag = ts;
@@ -729,13 +894,13 @@ namespace AlmImageUploader
                     var cn = sn.Nodes.Add(NodeText(inst));
                     cn.Tag = inst;
                     cn.Checked = ticked.Contains(inst);
-                    if (CountFor(inst) > 0) cn.ForeColor = Done;
+                    cn.ForeColor = CaseColor(inst);
                     if (inst == selected) select = cn;
                 }
                 sn.Checked = cases.All(ticked.Contains);
                 syncingChecks = false;
                 if (ts == selected) select = sn;
-                if (q != "" || expanded.Contains(ts)) sn.Expand();
+                if (narrowed || expanded.Contains(ts)) sn.Expand();
             }
             tree.EndUpdate();
             if (select != null) { tree.SelectedNode = select; select.EnsureVisible(); }
@@ -750,7 +915,7 @@ namespace AlmImageUploader
                 {
                     var inst = (TestInstance)cn.Tag;
                     cn.Text = NodeText(inst);
-                    cn.ForeColor = CountFor(inst) > 0 ? Done : SystemColors.WindowText;
+                    cn.ForeColor = CaseColor(inst);
                 }
             }
         }
@@ -762,9 +927,11 @@ namespace AlmImageUploader
             int pairs = images.Sum(i => i.Assigned.Count);
             int uploaded = images.Sum(i => i.Uploaded.Count(id => i.Assigned.Any(a => a.Id == id)));
             int cases = lab.Sets.Sum(s => s.Instances.Count(inst => CountFor(inst) > 0));
+            int na = lab.Sets.Sum(s => s.Instances.Count(IsNA));
             lblSummary.Text = string.Format(
-                "{0} images:  {1} assigned,  {2} not assigned.     {3} of {4} test cases have images.     {5} of {6} attachments uploaded.",
-                images.Count, assigned, images.Count - assigned, cases, lab.InstanceCount, uploaded, pairs);
+                "{0} images:  {1} assigned,  {2} not assigned.     {3} of {4} test cases have images{7}.     {5} of {6} attachments uploaded.",
+                images.Count, assigned, images.Count - assigned, cases, lab.InstanceCount, uploaded, pairs,
+                na > 0 ? ",  " + na + " are NA" : "");
         }
 
         void OnImageSelected()
@@ -924,7 +1091,21 @@ namespace AlmImageUploader
             var targets = Targets();
             if (targets.Count == 0) { Say("Tick the test cases or test sets whose field you want to change first."); return; }
             using (var dlg = new SetFieldDialog(client, lab, targets))
+            {
                 dlg.ShowDialog(this);
+                ApplyFieldChanges(dlg.Changes);
+            }
+        }
+
+        /// Keep the [NA] indicator in step with what the Set field dialog changed in ALM.
+        void ApplyFieldChanges(List<FieldChange> changes)
+        {
+            foreach (var ch in changes)
+                ch.Instance.Values[ch.Field] = ch.Value;
+            if (changes.Count == 0) return;
+            FillTreeFilter();
+            RefreshTree();
+            UpdateSummary();
         }
 
         void AcceptSuggestions()
@@ -964,7 +1145,7 @@ namespace AlmImageUploader
         void AfterChange(IEnumerable<ImageItem> changed)
         {
             SaveAssignments();
-            if (chkOnlyUnassigned.Checked) RefreshImages(); else RefreshImageRows(changed);
+            if (cboImgFilter.SelectedIndex != 0) RefreshImages(); else RefreshImageRows(changed);
             RefreshTreeCounts();
             OnCaseSelected();
             UpdateSummary();
@@ -1012,7 +1193,7 @@ namespace AlmImageUploader
                 Ui(() =>
                 {
                     OnCaseSelected();
-                    if (chkHideUploaded.Checked) RefreshImages();
+                    if (cboImgFilter.SelectedIndex != 0) RefreshImages();
                     Say(string.Format("{0} uploaded, {1} already there, {2} failed.", up.Ok, up.Skipped, up.Failed), up.Failed > 0);
                 });
             }, err => Log("ERROR: " + err), () => Ui(() => SetBusy(false)));
@@ -1142,8 +1323,17 @@ namespace AlmImageUploader
     }
 
     /// Sets one field (e.g. the "Comments" selection list) to the same value on many test cases.
+    public class FieldChange
+    {
+        public TestInstance Instance;
+        public string Field, Value;
+    }
+
     public class SetFieldDialog : Form
     {
+        /// Everything this dialog changed in ALM, in order.
+        public readonly List<FieldChange> Changes = new List<FieldChange>();
+
         // structural fields that must not be changed from here
         static readonly HashSet<string> Hidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "id", "cycle-id", "test-id", "test-order", "test-config-id", "ver-stamp", "last-modified", "subtype-id", "iterations" };
@@ -1316,6 +1506,7 @@ namespace AlmImageUploader
                     try
                     {
                         client.UpdateEntity("test-instances", inst.Id, change);
+                        lock (Changes) Changes.Add(new FieldChange { Instance = inst, Field = f.Name, Value = value });
                         ok++;
                     }
                     catch (Exception e)

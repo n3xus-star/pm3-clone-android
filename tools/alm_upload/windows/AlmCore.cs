@@ -493,6 +493,35 @@ namespace AlmImageUploader
                                                                               : Path.GetFileName(path);
         }
 
+        /// Compares like people read: "1.9 Login" before "1.10 Login", "Step 2" before "Step 10".
+        public static int NaturalCompare(string a, string b)
+        {
+            a = a ?? "";
+            b = b ?? "";
+            int i = 0, j = 0;
+            while (i < a.Length && j < b.Length)
+            {
+                if (char.IsDigit(a[i]) && char.IsDigit(b[j]))
+                {
+                    int si = i, sj = j;
+                    while (i < a.Length && char.IsDigit(a[i])) i++;
+                    while (j < b.Length && char.IsDigit(b[j])) j++;
+                    string na = a.Substring(si, i - si).TrimStart('0'), nb = b.Substring(sj, j - sj).TrimStart('0');
+                    if (na.Length != nb.Length) return na.Length.CompareTo(nb.Length);
+                    int c = string.CompareOrdinal(na, nb);
+                    if (c != 0) return c;
+                }
+                else
+                {
+                    int c = char.ToLowerInvariant(a[i]).CompareTo(char.ToLowerInvariant(b[j]));
+                    if (c != 0) return c;
+                    i++;
+                    j++;
+                }
+            }
+            return (a.Length - i).CompareTo(b.Length - j);
+        }
+
         public static int ToInt(string s)
         {
             int n;
@@ -504,6 +533,8 @@ namespace AlmImageUploader
     public class TestInstance
     {
         public string Id, TestId, SetId, Name, TestName, Label;
+        /// Extra field values read on load, e.g. { "user-01": "NA" } for the Comments column.
+        public readonly Dictionary<string, string> Values = new Dictionary<string, string>();
         public int Order;
         public bool Repeated;
     }
@@ -537,7 +568,7 @@ namespace AlmImageUploader
         readonly Dictionary<string, List<TestSet>> nameIndex = new Dictionary<string, List<TestSet>>();
         static readonly string[] FolderFields = { "id", "name", "parent-id" };
 
-        public TestLabFolder(AlmClient client, string folder)
+        public TestLabFolder(AlmClient client, string folder, IEnumerable<string> extraFields = null)
         {
             this.client = client;
             FolderId = ResolveFolder(folder.Trim());
@@ -570,7 +601,8 @@ namespace AlmImageUploader
             Sets.Sort((a, b) => string.Compare(a.PathText, b.PathText, StringComparison.OrdinalIgnoreCase));
 
             var insts = client.GetByIds("test-instances", "cycle-id", byId.Keys,
-                                        new[] { "id", "test-id", "cycle-id", "test-order", "name" });
+                                        new[] { "id", "test-id", "cycle-id", "test-order", "name" }
+                                            .Concat(extraFields ?? new string[0]).Distinct().ToArray());
             var names = client.GetByIds("tests", "id", insts.Select(i => Get(i, "test-id")), new[] { "id", "name" })
                               .ToDictionary(t => t["id"], t => Get(t, "name"));
             foreach (var i in insts)
@@ -579,11 +611,14 @@ namespace AlmImageUploader
                 if (!byId.TryGetValue(Get(i, "cycle-id"), out ts)) continue;
                 string tn;
                 names.TryGetValue(Get(i, "test-id"), out tn);
-                ts.Instances.Add(new TestInstance
+                var inst = new TestInstance
                 {
                     Id = i["id"], TestId = Get(i, "test-id"), SetId = ts.Id, Name = Get(i, "name"),
                     TestName = tn ?? "", Order = Util.ToInt(Get(i, "test-order")),
-                });
+                };
+                foreach (var f in extraFields ?? new string[0])
+                    inst.Values[f] = Get(i, f);
+                ts.Instances.Add(inst);
             }
             foreach (var ts in Sets)
             {
