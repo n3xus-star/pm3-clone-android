@@ -103,15 +103,16 @@ namespace AlmImageUploader
         {
             public int Status;
             public string Body;
+            public byte[] Bytes;
         }
 
         Response Send(string method, string url, byte[] body, string contentType,
-                      Dictionary<string, string> headers, bool retryOn401)
+                      Dictionary<string, string> headers, bool retryOn401, string accept = "application/xml")
         {
             var req = (HttpWebRequest)WebRequest.Create(url);
             req.Method = method;
             req.CookieContainer = cookies;
-            req.Accept = "application/xml";
+            req.Accept = accept;
             req.Timeout = Timeout;
             req.ReadWriteTimeout = Timeout;
             req.AllowAutoRedirect = true;
@@ -144,15 +145,19 @@ namespace AlmImageUploader
             using (wr)
             {
                 resp.Status = (int)wr.StatusCode;
-                using (var sr = new StreamReader(wr.GetResponseStream(), Encoding.UTF8))
-                    resp.Body = sr.ReadToEnd();
+                using (var ms = new MemoryStream())
+                {
+                    wr.GetResponseStream().CopyTo(ms);
+                    resp.Bytes = ms.ToArray();
+                }
+                resp.Body = Encoding.UTF8.GetString(resp.Bytes);
             }
 
             if (resp.Status == 401 && retryOn401 && user != null)
             {
                 // session expired (common while watching a folder): log in again, retry once
                 Login(user, password);
-                return Send(method, url, body, contentType, headers, false);
+                return Send(method, url, body, contentType, headers, false, accept);
             }
             return resp;
         }
@@ -303,6 +308,43 @@ namespace AlmImageUploader
         }
 
         // --------------------------------------------------------- attachments
+        public class Attachment
+        {
+            public string Id, Name;
+            public long Size;
+        }
+
+        /// Attachments of one entity, in the order ALM lists them.
+        public List<Attachment> GetAttachments(string entity, string id)
+        {
+            var r = Send("GET", Rest(entity) + "/" + id + "/attachments", null, null, null, true);
+            Check(r, "list attachments of " + entity + " " + id);
+            int total;
+            return ParseEntities(r.Body, out total).Select(e =>
+            {
+                string v;
+                long size;
+                return new Attachment
+                {
+                    Id = e.TryGetValue("id", out v) ? v : "",
+                    Name = e.TryGetValue("name", out v) ? v : "",
+                    Size = e.TryGetValue("file-size", out v) && long.TryParse(v, out size) ? size : -1,
+                };
+            }).Where(a => a.Name != "").ToList();
+        }
+
+        /// Download one attachment's file content.
+        public byte[] DownloadAttachment(string entity, string id, Attachment att)
+        {
+            var r = Send("GET", Rest(entity) + "/" + id + "/attachments/" + Uri.EscapeDataString(att.Name),
+                         null, null, null, true, "application/octet-stream");
+            if ((r.Status == 404 || r.Status == 400) && att.Id != "")
+                r = Send("GET", Rest("attachments") + "/" + att.Id + "?alt=application/octet-stream",
+                         null, null, null, true, "application/octet-stream");
+            Check(r, "download " + att.Name);
+            return r.Bytes;
+        }
+
         public HashSet<string> ListAttachmentNames(string entity, string id)
         {
             var r = Send("GET", Rest(entity) + "/" + id + "/attachments", null, null, null, true);

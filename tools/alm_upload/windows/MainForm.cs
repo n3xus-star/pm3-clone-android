@@ -36,7 +36,7 @@ namespace AlmImageUploader
         TextBox txtLabFolder, txtFolder, txtImgFilter, txtTestFilter, txtLog;
         CheckBox chkOnlyUnassigned, chkHideUploaded;
         Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
-               btnUntick, btnSetField;
+               btnUntick, btnSetField, btnDownload;
         Label lblTicked;
         ListView lvImages;
         PictureBox picPreview;
@@ -509,8 +509,10 @@ namespace AlmImageUploader
             btnUntick.Click += (s, e) => { ticked.Clear(); RefreshTree(); UpdateTicked(); };
             btnSetField = B("Set field (e.g. Comments)...");
             btnSetField.Click += (s, e) => OpenSetField();
+            btnDownload = B("Download attachments...");
+            btnDownload.Click += (s, e) => OpenDownload();
             lblTicked = new Label { AutoSize = true, Margin = new Padding(6, 9, 3, 3), ForeColor = SystemColors.GrayText };
-            p.Controls.Add(Flow(btnAssign, btnUntick, btnSetField, lblTicked), 0, 3);
+            p.Controls.Add(Flow(btnAssign, btnUntick, btnSetField, btnDownload, lblTicked), 0, 3);
 
             lblCase = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 0), Text = "Images in the selected test case:" };
             p.Controls.Add(lblCase, 0, 4);
@@ -617,7 +619,7 @@ namespace AlmImageUploader
 
         void EnableAssignUi(bool on)
         {
-            foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnSetField })
+            foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnSetField, btnDownload })
                 c.Enabled = on;
         }
 
@@ -898,6 +900,22 @@ namespace AlmImageUploader
         {
             lblTicked.Text = ticked.Count == 0 ? "tick test sets / test cases" : ticked.Count + " test case(s) ticked";
             lblTicked.ForeColor = ticked.Count == 0 ? SystemColors.GrayText : Color.RoyalBlue;
+        }
+
+        void OpenDownload()
+        {
+            if (Busy() || lab == null) return;
+            var targets = Targets();
+            if (targets.Count == 0) { Say("Tick the test cases or test sets to download from first."); return; }
+            var dest = Setting("download_folder");
+            if (dest == "")
+                dest = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ALM Download");
+            using (var dlg = new DownloadDialog(client, lab, targets, dest))
+            {
+                dlg.ShowDialog(this);
+                settings["download_folder"] = dlg.Destination;
+                SaveSettings();
+            }
         }
 
         void OpenSetField()
@@ -1316,6 +1334,202 @@ namespace AlmImageUploader
                 cboField.Enabled = cboValue.Enabled = true;
                 OnFieldChanged();   // show the new current values
             });
+        }
+    }
+
+    /// Downloads the attachments of many test cases into <folder>\<test set>\<test case>\,
+    /// the same layout "Load" understands, so the files can be uploaded again as they are.
+    public class DownloadDialog : Form
+    {
+        public const string NameNumbered = "Test case name + number      e.g. 1.1_Land_Screen_1.png";
+        public const string NameBoth = "Test case name + original name      e.g. 1.1_Land_Screen - Title 12.png";
+        public const string NameOriginal = "Original name      e.g. Title 12.png";
+
+        readonly AlmClient client;
+        readonly TestLabFolder lab;
+        readonly List<TestInstance> targets;
+        protected readonly TextBox txtDest, txtLog;
+        protected readonly ComboBox cboNaming;
+        protected readonly CheckBox chkImagesOnly, chkSkipExisting;
+        readonly Button btnGo, btnStop, btnOpen;
+        readonly Label lblProgress;
+        Thread worker;
+        volatile bool stop;
+
+        public string Destination { get { return txtDest.Text.Trim(); } }
+
+        public DownloadDialog(AlmClient client, TestLabFolder lab, List<TestInstance> targets, string destination)
+        {
+            this.client = client;
+            this.lab = lab;
+            this.targets = targets;
+            Text = "Download attachments";
+            Font = new Font("Segoe UI", 9f);
+            ClientSize = new Size(680, 500);
+            StartPosition = FormStartPosition.CenterParent;
+            MinimizeBox = MaximizeBox = false;
+            ShowInTaskbar = false;
+
+            var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(10) };
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            var head = new Label
+            {
+                AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 10),
+                Text = string.Format("Download the attachments of {0} test case(s) in {1} test set(s)",
+                                     targets.Count, targets.Select(i => i.SetId).Distinct().Count()),
+            };
+            t.Controls.Add(head, 0, 0);
+            t.SetColumnSpan(head, 3);
+            t.Controls.Add(new Label { Text = "Save to", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 1);
+            txtDest = new TextBox { Dock = DockStyle.Fill, Text = destination };
+            t.Controls.Add(txtDest, 1, 1);
+            var browse = new Button { Text = "Browse...", AutoSize = true };
+            browse.Click += (s, e) =>
+            {
+                using (var d = new FolderBrowserDialog { SelectedPath = txtDest.Text })
+                    if (d.ShowDialog(this) == DialogResult.OK) txtDest.Text = d.SelectedPath;
+            };
+            t.Controls.Add(browse, 2, 1);
+            t.Controls.Add(new Label { Text = "File names", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 2);
+            cboNaming = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+            cboNaming.Items.AddRange(new object[] { NameNumbered, NameBoth, NameOriginal });
+            cboNaming.SelectedIndex = 0;
+            t.Controls.Add(cboNaming, 1, 2);
+            t.SetColumnSpan(cboNaming, 2);
+            chkImagesOnly = new CheckBox { Text = "Images only (png, jpg, gif, bmp, tif, webp)", AutoSize = true, Checked = true };
+            chkSkipExisting = new CheckBox { Text = "Skip files that already exist (to continue an earlier download)", AutoSize = true, Checked = true };
+            t.Controls.Add(chkImagesOnly, 1, 3);
+            t.SetColumnSpan(chkImagesOnly, 2);
+            t.Controls.Add(chkSkipExisting, 1, 4);
+            t.SetColumnSpan(chkSkipExisting, 2);
+            var layout = new Label
+            {
+                AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 6, 3, 6), MaximumSize = new Size(540, 0),
+                Text = "Saved as  <Save to>\\<test set>\\<test case>\\<file>.  Choose that folder as the image folder and press Load: "
+                     + "every file is assigned to its test case again, ready to upload.",
+            };
+            t.Controls.Add(layout, 1, 5);
+            t.SetColumnSpan(layout, 2);
+            var row = new FlowLayoutPanel { AutoSize = true };
+            btnGo = new Button { Text = "Download", AutoSize = true };
+            btnGo.Font = new Font(btnGo.Font, FontStyle.Bold);
+            btnStop = new Button { Text = "Stop", AutoSize = true, Enabled = false };
+            btnOpen = new Button { Text = "Open folder", AutoSize = true, Enabled = false };
+            var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+            btnGo.Click += (s, e) => StartDownload();
+            btnStop.Click += (s, e) => stop = true;
+            btnOpen.Click += (s, e) => { if (Directory.Exists(Destination)) System.Diagnostics.Process.Start("explorer.exe", "\"" + Destination + "\""); };
+            row.Controls.AddRange(new Control[] { btnGo, btnStop, btnOpen, close });
+            lblProgress = new Label { AutoSize = true, Margin = new Padding(8, 9, 3, 3) };
+            row.Controls.Add(lblProgress);
+            t.Controls.Add(row, 1, 6);
+            t.SetColumnSpan(row, 2);
+            txtLog = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, BackColor = SystemColors.Window };
+            t.Controls.Add(txtLog, 0, 7);
+            t.SetColumnSpan(txtLog, 3);
+            t.RowCount = 8;
+            for (int i = 0; i < 7; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            Controls.Add(t);
+            CancelButton = close;
+            FormClosing += (s, e) => { if (worker != null && worker.IsAlive) { stop = true; e.Cancel = true; } };
+        }
+
+        void Ui(Action a)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired) BeginInvoke(a); else a();
+        }
+
+        void Log(string msg) { Ui(() => txtLog.AppendText(msg + Environment.NewLine)); }
+
+        /// File name for the n-th downloaded attachment of a test case.
+        public static string FileName(string naming, TestInstance inst, string original, int n)
+        {
+            var ext = Path.GetExtension(original);
+            var label = Util.SafeFolderName(inst.Label);
+            if (naming == NameOriginal) return Util.SafeFolderName(original);
+            if (naming == NameBoth) return label + " - " + Util.SafeFolderName(original);
+            return label + "_" + n + ext;
+        }
+
+        protected void StartDownload()
+        {
+            var dest = Destination;
+            if (dest == "") return;
+            string naming = (string)cboNaming.SelectedItem;
+            bool imagesOnly = chkImagesOnly.Checked, skipExisting = chkSkipExisting.Checked;
+            stop = false;
+            btnGo.Enabled = btnOpen.Enabled = false;
+            btnStop.Enabled = true;
+            int files = 0, skipped = 0, failed = 0, cases = 0;
+            worker = new Thread(() =>
+            {
+                try
+                {
+                    Directory.CreateDirectory(dest);
+                    for (int k = 0; k < targets.Count && !stop; k++)
+                    {
+                        var inst = targets[k];
+                        var ts = lab.SetOf(inst);
+                        var where = ts.Name + " > " + inst.Label;
+                        int shownCase = k + 1, shownFiles = files;
+                        Ui(() => lblProgress.Text = string.Format("test case {0} / {1}   -   {2} file(s)", shownCase, targets.Count, shownFiles));
+                        try
+                        {
+                            var atts = client.GetAttachments("test-instances", inst.Id)
+                                             .Where(a => !imagesOnly || Util.ImageExts.Contains(Path.GetExtension(a.Name).ToLowerInvariant()))
+                                             .ToList();
+                            if (atts.Count == 0) continue;
+                            var dir = lab.LocalSetPath(ts).Aggregate(dest, (acc, part) => Path.Combine(acc, Util.SafeFolderName(part)));
+                            dir = Path.Combine(dir, Util.SafeFolderName(inst.Label));
+                            Directory.CreateDirectory(dir);
+                            int got = 0, n = 0;
+                            foreach (var att in atts)
+                            {
+                                if (stop) break;
+                                var path = Path.Combine(dir, FileName(naming, inst, att.Name, ++n));
+                                if (skipExisting && File.Exists(path)) { skipped++; continue; }
+                                try
+                                {
+                                    File.WriteAllBytes(path, client.DownloadAttachment("test-instances", inst.Id, att));
+                                    got++;
+                                    files++;
+                                }
+                                catch (Exception e)
+                                {
+                                    if (!(e is AlmException || e is WebException || e is IOException)) throw;
+                                    failed++;
+                                    Log("[FAIL] " + where + " / " + att.Name + ": " + e.Message);
+                                }
+                            }
+                            cases++;
+                            Log(string.Format("[ OK ] {0}: {1} file(s)", where, got));
+                        }
+                        catch (Exception e)
+                        {
+                            if (!(e is AlmException || e is WebException || e is IOException)) throw;
+                            failed++;
+                            Log("[FAIL] " + where + ": " + e.Message);
+                        }
+                    }
+                    Log(string.Format("{0}: {1} file(s) from {2} test case(s) saved in {3}.  {4} already there, {5} failed.",
+                                      stop ? "Stopped" : "Done", files, cases, dest, skipped, failed));
+                }
+                catch (Exception e) { Log("ERROR: " + e.Message); }
+                finally
+                {
+                    Ui(() =>
+                    {
+                        btnGo.Enabled = btnOpen.Enabled = true;
+                        btnStop.Enabled = false;
+                        lblProgress.Text = string.Format("{0} file(s) saved", files);
+                    });
+                }
+            }) { IsBackground = true };
+            worker.Start();
         }
     }
 

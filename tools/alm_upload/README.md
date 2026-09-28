@@ -25,6 +25,10 @@ nothing to install and no Python. It works step by step:
      assign the selected images to every ticked test case at once; **Untick all**
      and **Clear all assignments** start over
    - **Upload assigned images** uploads everything not uploaded yet
+   - **Download attachments...** saves the attachments of all ticked test cases as
+     `<folder>\<test set>\<test case>\<file>`, renamed after the test case
+     (e.g. `1.1_Land_Screen_1.png`); loading that folder assigns every file to its
+     test case again, ready to upload
    - **Set field...** changes one field (e.g. the *Comments* selection list to *NA*)
      on all ticked test cases; the values come from the field's ALM list
    The assignments and what was uploaded are saved in `ALM-assignments.txt` in the
