@@ -519,6 +519,16 @@ namespace AlmImageUploader
 
         public int InstanceCount { get { return Sets.Sum(s => s.Instances.Count); } }
 
+        public TestSet SetOf(TestInstance inst)
+        {
+            return Sets.First(s => s.Id == inst.SetId);
+        }
+
+        public TestInstance FindInstance(string id)
+        {
+            return Sets.SelectMany(s => s.Instances).FirstOrDefault(i => i.Id == id);
+        }
+
         // ------------------------------------------------------------ folders
         List<Dictionary<string, string>> FoldersNamed(string name, HashSet<string> parents)
         {
@@ -680,6 +690,119 @@ namespace AlmImageUploader
         }
     }
 
+    /// Suggests a test case for an image from word/number overlap between the file name
+    /// and "<test set> <test case>" (e.g. "1.1 Username Not Found.png" ~ "3.1_User_NotFound").
+    /// Only a clear winner is suggested; the user confirms it.
+    public class Suggester
+    {
+        readonly List<KeyValuePair<TestInstance, List<string>>> candidates = new List<KeyValuePair<TestInstance, List<string>>>();
+
+        public Suggester(TestLabFolder lab)
+        {
+            foreach (var ts in lab.Sets)
+                foreach (var i in ts.Instances)
+                    candidates.Add(new KeyValuePair<TestInstance, List<string>>(i, Tokens(ts.Name + " " + i.TestName)));
+        }
+
+        public static List<string> Tokens(string s)
+        {
+            s = Regex.Replace(s ?? "", "([a-z])([A-Z])", "$1 $2");          // NotFound -> Not Found
+            return Regex.Matches(s.ToLowerInvariant(), @"\d+(?:\.\d+)*|[a-z]+")
+                        .Cast<Match>().Select(m => m.Value).Distinct().ToList();
+        }
+
+        static bool Same(string a, string b)
+        {
+            if (a == b) return true;
+            if (char.IsDigit(a[0]) || char.IsDigit(b[0]) || a.Length < 3 || b.Length < 3) return false;
+            return a.StartsWith(b) || b.StartsWith(a);                        // land ~ landing, user ~ username
+        }
+
+        public TestInstance Suggest(string fileName)
+        {
+            var img = Tokens(Path.GetFileNameWithoutExtension(fileName));
+            if (!img.Any(t => !char.IsDigit(t[0]))) return null;
+            double best = 0, second = 0;
+            TestInstance winner = null;
+            foreach (var c in candidates)
+            {
+                double score = 0;
+                bool word = false;
+                foreach (var t in img)
+                {
+                    if (!c.Value.Any(x => Same(t, x))) continue;
+                    bool isWord = !char.IsDigit(t[0]);
+                    score += isWord ? 2 : 1;
+                    word |= isWord;
+                }
+                if (!word) continue;
+                score -= 0.01 * c.Value.Count;                                // prefer the closer, shorter name
+                if (score > best) { second = best; best = score; winner = c.Key; }
+                else if (score > second) second = score;
+            }
+            return best - second >= 0.5 ? winner : null;
+        }
+    }
+
+    // ----------------------------------------------------------- manual assigning
+    public class ImageItem
+    {
+        public string File, Rel;
+        public readonly List<TestInstance> Assigned = new List<TestInstance>();
+        public readonly HashSet<string> Uploaded = new HashSet<string>();   // test instance ids
+        public TestInstance Suggestion;
+
+        public bool FullyUploaded { get { return Assigned.Count > 0 && Assigned.All(i => Uploaded.Contains(i.Id)); } }
+    }
+
+    /// Remembers which image goes to which test case (and what is uploaded) in a text file
+    /// next to the images, so the work can continue another day.
+    /// Line format: domain TAB project TAB relative image path TAB test instance id TAB uploaded(0/1)
+    public static class AssignmentStore
+    {
+        public const string FileName = "ALM-assignments.txt";
+
+        static string PathIn(string root) { return Path.Combine(root, FileName); }
+
+        static IEnumerable<string[]> Read(string root)
+        {
+            var path = PathIn(root);
+            if (!File.Exists(path)) yield break;
+            foreach (var line in File.ReadAllLines(path, Encoding.UTF8))
+            {
+                var f = line.Split('\t');
+                if (f.Length >= 5 && !line.StartsWith("#")) yield return f;
+            }
+        }
+
+        public static void Load(string root, string domain, string project, TestLabFolder lab, List<ImageItem> images)
+        {
+            var byRel = images.ToDictionary(i => i.Rel, StringComparer.OrdinalIgnoreCase);
+            foreach (var f in Read(root))
+            {
+                ImageItem img;
+                if (f[0] != domain || f[1] != project || !byRel.TryGetValue(f[2], out img)) continue;
+                var inst = lab.FindInstance(f[3]);
+                if (inst == null) continue;
+                if (!img.Assigned.Contains(inst)) img.Assigned.Add(inst);
+                if (f[4] == "1") img.Uploaded.Add(inst.Id);
+            }
+        }
+
+        public static void Save(string root, string domain, string project, TestLabFolder lab, List<ImageItem> images)
+        {
+            // keep lines of other projects / other Test Lab folders
+            var mine = new HashSet<string>(lab.Sets.SelectMany(s => s.Instances).Select(i => i.Id));
+            var lines = new List<string> { "# ALM Image Uploader - which image goes to which test case. Safe to delete." };
+            lines.AddRange(Read(root).Where(f => f[0] != domain || f[1] != project || !mine.Contains(f[3]))
+                                     .Select(f => string.Join("\t", f)));
+            foreach (var img in images)
+                foreach (var inst in img.Assigned)
+                    lines.Add(string.Join("\t", domain, project, img.Rel, inst.Id, img.Uploaded.Contains(inst.Id) ? "1" : "0"));
+            File.WriteAllLines(PathIn(root), lines.ToArray(), Encoding.UTF8);
+        }
+    }
+
     // ------------------------------------------------------------------ uploader
     public class Uploader
     {
@@ -707,14 +830,21 @@ namespace AlmImageUploader
                 Skipped++;
                 return;
             }
-            var name = Path.GetFileName(item.File);
-            var id = item.Instance.Id;
-            var target = item.Set.PathText + " > " + item.Instance.Label;
+            if (UploadTo(item.File, item.Set, item.Instance))
+                AfterUpload(item.File);
+        }
+
+        /// Attach one image to one test case. True when it is in ALM afterwards
+        /// (uploaded now, or an attachment with the same name was already there).
+        public bool UploadTo(string file, TestSet set, TestInstance inst)
+        {
+            var name = Path.GetFileName(file);
+            var target = set.PathText + " > " + inst.Label;
             try
             {
                 HashSet<string> names;
-                if (!existing.TryGetValue(id, out names))
-                    existing[id] = names = client.ListAttachmentNames("test-instances", id);
+                if (!existing.TryGetValue(inst.Id, out names))
+                    existing[inst.Id] = names = client.ListAttachmentNames("test-instances", inst.Id);
                 if (names.Contains(name))
                 {
                     log("[SKIP] " + name + " - already attached to " + target);
@@ -722,12 +852,12 @@ namespace AlmImageUploader
                 }
                 else
                 {
-                    client.UploadAttachment("test-instances", id, item.File, name);
+                    client.UploadAttachment("test-instances", inst.Id, file, name);
                     names.Add(name);
                     log("[ OK ] " + name + " -> " + target);
                     Ok++;
                 }
-                AfterUpload(item.File);
+                return true;
             }
             catch (Exception e)
             {
@@ -735,6 +865,7 @@ namespace AlmImageUploader
                     throw;
                 log("[FAIL] " + name + " -> " + target + ": " + e.Message);
                 Failed++;
+                return false;
             }
         }
 

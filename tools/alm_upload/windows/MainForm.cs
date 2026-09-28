@@ -1,6 +1,6 @@
 // ALM Image Uploader - Windows Forms UI.
-// Step 1: log in.  Step 2: choose domain and project.  Step 3: choose the Test Lab
-// folder and image folder, check, and upload.
+// Step 1: log in.  Step 2: choose domain and project.  Step 3: load the Test Lab folder
+// and the image folder, assign images to test cases, and upload.
 
 using System;
 using System.Collections.Generic;
@@ -17,6 +17,7 @@ namespace AlmImageUploader
     {
         const string AppName = "ALM Image Uploader";
         const string SettingsFile = "ALMImageUploader.ini";
+        static readonly Color Done = Color.ForestGreen, Hint = Color.SteelBlue, Warn = Color.DarkOrange;
 
         // step 1
         Panel pageLogin;
@@ -31,35 +32,35 @@ namespace AlmImageUploader
         Label lblWho2, lblProjectStatus;
         // step 3
         Panel pageWork;
-        Label lblWho3, lblSummary;
-        TextBox txtLabFolder, txtFolder, txtMoveTo, txtLog;
-        CheckBox chkMove, chkWatch;
-        NumericUpDown numInterval;
-        Button btnPickLab, btnCheck, btnMake, btnUpload, btnStop;
+        Label lblWho3, lblSummary, lblPreview, lblCase;
+        TextBox txtLabFolder, txtFolder, txtImgFilter, txtTestFilter, txtLog;
+        CheckBox chkOnlyUnassigned, chkHideUploaded;
+        Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnRemoveFromCase, btnUpload, btnStop;
+        ListView lvImages;
+        PictureBox picPreview;
         TreeView tree;
+        ListBox lstCaseImages;
+        SplitContainer split;
 
         AlmClient client;
         string labFolderId, labFolderPath;   // set by the Test Lab folder picker
         readonly Dictionary<string, string> settings = new Dictionary<string, string>();
 
+        // loaded data (step 3)
+        TestLabFolder lab;
+        string imageRoot;
+        List<ImageItem> images = new List<ImageItem>();
+
         Thread worker;
         volatile bool stopRequested;
-        Config cfg;
-
-        class Config
-        {
-            public string LabFolder, LabFolderText, Folder, MoveTo;
-            public bool Watch;
-            public int Interval;
-        }
 
         public MainForm()
         {
             Text = AppName;
             Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(860, 820);
-            MinimumSize = new Size(720, 640);
+            ClientSize = new Size(1180, 820);
+            MinimumSize = new Size(900, 640);
             StartPosition = FormStartPosition.CenterScreen;
             LoadSettings();
             BuildLoginPage();
@@ -91,23 +92,20 @@ namespace AlmImageUploader
             return b;
         }
 
-        static TableLayoutPanel Grid(int columns)
+        static TableLayoutPanel Rows(params SizeType[] rows)
         {
-            return new TableLayoutPanel
-            {
-                Dock = DockStyle.Top, ColumnCount = columns, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            };
+            var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = rows.Length, Margin = new Padding(0) };
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            foreach (var r in rows)
+                t.RowStyles.Add(r == SizeType.AutoSize ? new RowStyle(SizeType.AutoSize) : new RowStyle(SizeType.Percent, 50));
+            return t;
         }
 
-        static GroupBox Box(string title, Control content)
+        static FlowLayoutPanel Flow(params Control[] controls)
         {
-            var g = new GroupBox
-            {
-                Text = title, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6),
-                Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
-            };
-            g.Controls.Add(content);
-            return g;
+            var f = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true, Margin = new Padding(0) };
+            f.Controls.AddRange(controls);
+            return f;
         }
 
         /// A centred card for the login / project steps. Rows 0-1 hold the title and subtitle.
@@ -158,7 +156,11 @@ namespace AlmImageUploader
                 AcceptButton = btnNext;
                 cboProject.Focus();
             }
-            else AcceptButton = null;
+            else
+            {
+                AcceptButton = null;
+                if (split.Width > 200) split.SplitterDistance = split.Width / 2;
+            }
         }
 
         // ------------------------------------------------------ step 1: login
@@ -312,11 +314,7 @@ namespace AlmImageUploader
             settings["project"] = project;
             SaveSettings();
             lblWho3.Text = string.Format("{0}   |   Domain: {1}   |   Project: {2}", client.User, domain, project);
-            if (changed)
-            {
-                tree.Nodes.Clear();
-                lblSummary.Text = "Choose the Test Lab folder and image folder, then press Check.";
-            }
+            if (changed) ClearLoaded();
             ShowPage(pageWork);
         }
 
@@ -326,20 +324,24 @@ namespace AlmImageUploader
             client = null;
             if (c != null)
                 ThreadPool.QueueUserWorkItem(_ => { try { c.Logout(); } catch (Exception) { } });
-            tree.Nodes.Clear();
-            lblSummary.Text = "Choose the Test Lab folder and image folder, then press Check.";
+            ClearLoaded();
             cboDomain.Items.Clear();
             cboProject.Items.Clear();
             lblLoginStatus.Text = "";
             ShowPage(pageLogin);
         }
 
-        // ------------------------------------------------ step 3: the work
+        // ------------------------------------------------ step 3: layout
         void BuildWorkPage()
         {
             pageWork = new Panel { Dock = DockStyle.Fill, Visible = false };
-            var main = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8) };
+            var main = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(8) };
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
 
             // header: who / where + change project / log out
             var head = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Dock = DockStyle.Top };
@@ -352,96 +354,57 @@ namespace AlmImageUploader
             head.Controls.Add(lblWho3, 0, 0);
             head.Controls.Add(btnChange, 1, 0);
             head.Controls.Add(btnLogout, 2, 0);
-            main.Controls.Add(head);
+            main.Controls.Add(head, 0, 0);
 
-            // folders
-            var g2 = Grid(3);
-            g2.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            g2.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            g2.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            g2.Controls.Add(L("Test Lab folder"), 0, 0);
-            g2.Controls.Add(txtLabFolder = T(), 1, 0);
+            // sources
+            var src = new TableLayoutPanel { ColumnCount = 4, AutoSize = true, Dock = DockStyle.Top };
+            src.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            src.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            src.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            src.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            src.Controls.Add(L("Step 3 of 3:   Test Lab folder"), 0, 0);
+            src.Controls.Add(txtLabFolder = T(), 1, 0);
             btnPickLab = B("Browse ALM...");
             btnPickLab.Click += OnPickLabFolder;
-            g2.Controls.Add(btnPickLab, 2, 0);
-            g2.Controls.Add(L("Image folder"), 0, 1);
-            g2.Controls.Add(txtFolder = T(), 1, 1);
-            var browse1 = B("Browse...");
-            browse1.Click += (s, e) => BrowseLocal(txtFolder);
-            g2.Controls.Add(browse1, 2, 1);
-            var hint = L("Layout:  <image folder>\\<test set>\\<test case>\\screenshot.png", true);
-            g2.Controls.Add(hint, 1, 2);
-            g2.SetColumnSpan(hint, 2);
-            var row = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
-            btnMake = B("Create image folders");
-            btnCheck = B("Check (preview, no upload)");
-            btnMake.Click += OnMake;
-            btnCheck.Click += (s, e) => { if (CheckFields(true)) Start(JobCheck); };
-            row.Controls.Add(btnMake);
-            row.Controls.Add(btnCheck);
-            g2.Controls.Add(row, 1, 3);
-            g2.SetColumnSpan(row, 2);
-            main.Controls.Add(Box("Step 3 of 3:  Test Lab folder and image folder", g2));
+            src.Controls.Add(btnPickLab, 2, 0);
+            src.Controls.Add(L("Image folder"), 0, 1);
+            src.Controls.Add(txtFolder = T(), 1, 1);
+            var browse = B("Browse...");
+            browse.Click += (s, e) => BrowseLocal(txtFolder);
+            src.Controls.Add(browse, 2, 1);
+            btnLoad = B("Load", true);
+            btnLoad.Click += OnLoad;
+            src.Controls.Add(btnLoad, 3, 0);
+            src.SetRowSpan(btnLoad, 2);
+            btnLoad.Dock = DockStyle.Fill;
+            main.Controls.Add(src, 0, 1);
 
-            // plan
-            var g3 = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-            g3.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            g3.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            lblSummary = L("Choose the Test Lab folder and image folder, then press Check.");
-            g3.Controls.Add(lblSummary, 0, 0);
-            tree = new TreeView { Dock = DockStyle.Fill, HideSelection = false };
-            g3.Controls.Add(tree, 0, 1);
-            var box3 = new GroupBox { Text = "Test sets and test cases", Dock = DockStyle.Fill, Padding = new Padding(6) };
-            box3.Controls.Add(g3);
-            main.Controls.Add(box3);
+            // images (left) | test cases (right)
+            split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical };
+            split.Panel1.Controls.Add(BuildImagesPanel());
+            split.Panel2.Controls.Add(BuildTestsPanel());
+            main.Controls.Add(split, 0, 2);
 
-            // upload
-            var g4 = Grid(3);
-            g4.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            g4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            g4.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            chkMove = new CheckBox { Text = "After upload, move images to", AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
-            g4.Controls.Add(chkMove, 0, 0);
-            g4.Controls.Add(txtMoveTo = T(), 1, 0);
-            var browse2 = B("Browse...");
-            browse2.Click += (s, e) => BrowseLocal(txtMoveTo);
-            g4.Controls.Add(browse2, 2, 0);
-            var wrow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
-            chkWatch = new CheckBox { Text = "Keep watching: auto upload new images every", AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
-            numInterval = new NumericUpDown { Minimum = 1, Maximum = 3600, Value = 10, Width = 60 };
-            wrow.Controls.Add(chkWatch);
-            wrow.Controls.Add(numInterval);
-            wrow.Controls.Add(L("seconds"));
-            g4.Controls.Add(wrow, 0, 1);
-            g4.SetColumnSpan(wrow, 3);
-            var brow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
-            btnUpload = B("Upload", true);
+            // bottom: summary + upload
+            var bottom = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Dock = DockStyle.Top };
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            lblSummary = new Label { AutoSize = true, Margin = new Padding(3, 9, 3, 3), Text = "Choose the Test Lab folder and the image folder, then press Load." };
+            btnUpload = B("Upload assigned images", true);
             btnStop = B("Stop");
             btnStop.Enabled = false;
-            var btnClear = B("Clear log");
-            btnUpload.Click += (s, e) => { if (CheckFields(true) && ValidateUpload()) Start(JobUpload); };
+            btnUpload.Click += OnUpload;
             btnStop.Click += (s, e) => { stopRequested = true; Log("Stopping after the current image..."); };
-            btnClear.Click += (s, e) => txtLog.Clear();
-            brow.Controls.Add(btnUpload);
-            brow.Controls.Add(btnStop);
-            brow.Controls.Add(btnClear);
-            g4.Controls.Add(brow, 0, 2);
-            g4.SetColumnSpan(brow, 3);
-            main.Controls.Add(Box("Upload", g4));
+            bottom.Controls.Add(lblSummary, 0, 0);
+            bottom.Controls.Add(btnUpload, 1, 0);
+            bottom.Controls.Add(btnStop, 2, 0);
+            main.Controls.Add(bottom, 0, 3);
 
             txtLog = new TextBox
             {
                 Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill,
                 Font = new Font(FontFamily.GenericMonospace, 9f), BackColor = SystemColors.Window,
             };
-            main.Controls.Add(txtLog);
-
-            main.RowCount = 5;
-            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            main.RowStyles.Add(new RowStyle(SizeType.Percent, 60));
-            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            main.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
+            main.Controls.Add(txtLog, 0, 4);
             pageWork.Controls.Add(main);
 
             txtLabFolder.Text = Setting("lab_folder");
@@ -453,20 +416,109 @@ namespace AlmImageUploader
             // typing a path by hand drops the id picked from the tree
             txtLabFolder.TextChanged += (s, e) => { if (txtLabFolder.Text != labFolderPath) labFolderId = null; };
             txtFolder.Text = Setting("folder");
-            chkMove.Checked = Setting("move") == "1";
-            txtMoveTo.Text = Setting("move_to");
-            chkWatch.Checked = Setting("watch") == "1";
-            decimal n;
-            if (decimal.TryParse(Setting("interval"), out n))
-                numInterval.Value = Math.Max(1, Math.Min(3600, n));
+            EnableAssignUi(false);
             Controls.Add(pageWork);
+        }
+
+        Control BuildImagesPanel()
+        {
+            var p = Rows(SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize);
+            p.RowStyles[2] = new RowStyle(SizeType.Percent, 58);
+            p.RowStyles[4] = new RowStyle(SizeType.Percent, 42);
+            p.Controls.Add(new Label { Text = "Images", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 0) }, 0, 0);
+
+            txtImgFilter = new TextBox { Width = 170, Margin = new Padding(3, 4, 3, 3) };
+            chkOnlyUnassigned = new CheckBox { Text = "Only not assigned", AutoSize = true, Margin = new Padding(8, 6, 3, 3) };
+            chkHideUploaded = new CheckBox { Text = "Hide uploaded", AutoSize = true, Margin = new Padding(8, 6, 3, 3) };
+            txtImgFilter.TextChanged += (s, e) => RefreshImages();
+            chkOnlyUnassigned.CheckedChanged += (s, e) => RefreshImages();
+            chkHideUploaded.CheckedChanged += (s, e) => RefreshImages();
+            p.Controls.Add(Flow(new Label { Text = "Search:", AutoSize = true, Margin = new Padding(3, 7, 0, 3) },
+                                txtImgFilter, chkOnlyUnassigned, chkHideUploaded), 0, 1);
+
+            lvImages = new ListView
+            {
+                Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false,
+                MultiSelect = true, GridLines = true,
+            };
+            lvImages.Columns.Add("Image", 190);
+            lvImages.Columns.Add("Test case (assigned / suggested)", 260);
+            lvImages.Columns.Add("Status", 80);
+            lvImages.SelectedIndexChanged += (s, e) => OnImageSelected();
+            lvImages.ItemDrag += (s, e) => { if (lvImages.SelectedItems.Count > 0) lvImages.DoDragDrop(SelectedImages(), DragDropEffects.Copy); };
+            lvImages.KeyDown += (s, e) =>
+            {
+                if (e.Control && e.KeyCode == Keys.A) { foreach (ListViewItem it in lvImages.Items) it.Selected = true; }
+            };
+            p.Controls.Add(lvImages, 0, 2);
+
+            lblPreview = new Label { AutoSize = true, Margin = new Padding(3, 6, 3, 0), MaximumSize = new Size(560, 0) };
+            p.Controls.Add(lblPreview, 0, 3);
+            picPreview = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = SystemColors.ControlDark };
+            p.Controls.Add(picPreview, 0, 4);
+
+            btnAccept = B("Accept suggestion");
+            btnUnassign = B("Remove assignment");
+            btnAccept.Click += (s, e) => AcceptSuggestions();
+            btnUnassign.Click += (s, e) => UnassignSelected();
+            p.Controls.Add(Flow(btnAccept, btnUnassign,
+                new Label { Text = "Tip: Ctrl/Shift+click to pick many images, then drag them onto a test case.", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(6, 9, 3, 3) }), 0, 5);
+            return p;
+        }
+
+        Control BuildTestsPanel()
+        {
+            var p = Rows(SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize);
+            p.RowStyles[2] = new RowStyle(SizeType.Percent, 68);
+            p.RowStyles[5] = new RowStyle(SizeType.Percent, 32);
+            p.Controls.Add(new Label { Text = "Test sets and test cases", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 0) }, 0, 0);
+            txtTestFilter = new TextBox { Width = 220, Margin = new Padding(3, 4, 3, 3) };
+            txtTestFilter.TextChanged += (s, e) => RefreshTree();
+            p.Controls.Add(Flow(new Label { Text = "Search:", AutoSize = true, Margin = new Padding(3, 7, 0, 3) }, txtTestFilter), 0, 1);
+
+            tree = new TreeView { Dock = DockStyle.Fill, HideSelection = false, AllowDrop = true };
+            tree.AfterSelect += (s, e) => OnCaseSelected();
+            tree.NodeMouseDoubleClick += (s, e) => { if (e.Node.Tag is TestInstance) AssignSelectedTo((TestInstance)e.Node.Tag); };
+            tree.DragOver += (s, e) =>
+            {
+                var node = tree.GetNodeAt(tree.PointToClient(new Point(e.X, e.Y)));
+                e.Effect = node != null && node.Tag is TestInstance && e.Data.GetDataPresent(typeof(List<ImageItem>))
+                           ? DragDropEffects.Copy : DragDropEffects.None;
+                if (node != null && node.Tag is TestInstance) tree.SelectedNode = node;
+            };
+            tree.DragDrop += (s, e) =>
+            {
+                var node = tree.GetNodeAt(tree.PointToClient(new Point(e.X, e.Y)));
+                var dropped = e.Data.GetData(typeof(List<ImageItem>)) as List<ImageItem>;
+                if (node != null && node.Tag is TestInstance && dropped != null)
+                    Assign(dropped, (TestInstance)node.Tag);
+            };
+            p.Controls.Add(tree, 0, 2);
+
+            btnAssign = B("<  Assign selected images to this test case", true);
+            btnAssign.Click += (s, e) =>
+            {
+                var inst = tree.SelectedNode == null ? null : tree.SelectedNode.Tag as TestInstance;
+                if (inst == null) { Say("Select a test case (not a test set) on the right first."); return; }
+                AssignSelectedTo(inst);
+            };
+            p.Controls.Add(Flow(btnAssign), 0, 3);
+
+            lblCase = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 0), Text = "Images in the selected test case:" };
+            p.Controls.Add(lblCase, 0, 4);
+            lstCaseImages = new ListBox { Dock = DockStyle.Fill, SelectionMode = SelectionMode.MultiExtended, IntegralHeight = false };
+            p.Controls.Add(lstCaseImages, 0, 5);
+            btnRemoveFromCase = B("Remove selected from this test case");
+            btnRemoveFromCase.Click += (s, e) => RemoveFromCase();
+            p.Controls.Add(Flow(btnRemoveFromCase), 0, 6);
+            return p;
         }
 
         void BrowseLocal(TextBox target)
         {
             using (var d = new FolderBrowserDialog())
             {
-                d.SelectedPath = target.Text != "" ? target.Text : txtFolder.Text;
+                d.SelectedPath = target.Text;
                 if (d.ShowDialog(this) == DialogResult.OK)
                     target.Text = d.SelectedPath;
             }
@@ -483,6 +535,387 @@ namespace AlmImageUploader
                 labFolderId = dlg.SelectedId;
                 SaveSettings();
             }
+        }
+
+        protected virtual void Say(string msg, bool warning = false)
+        {
+            MessageBox.Show(this, msg, AppName, MessageBoxButtons.OK, warning ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+        }
+
+        protected virtual bool Confirm(string question)
+        {
+            return MessageBox.Show(this, question, AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        }
+
+        // ------------------------------------------------------------ load
+        void OnLoad(object sender, EventArgs e)
+        {
+            if (Busy()) return;
+            if (txtLabFolder.Text.Trim() == "") { Say("Choose the Test Lab folder first (press 'Browse ALM...')."); return; }
+            var folder = txtFolder.Text.Trim();
+            if (!Directory.Exists(folder)) { Say("Image folder not found:\n" + folder); return; }
+            SaveSettings();
+            string labArg = labFolderId ?? txtLabFolder.Text.Trim(), labText = txtLabFolder.Text.Trim();
+            string domain = client.Domain, project = client.Project;
+            SetBusy(true);
+            RunBackground(() =>
+            {
+                Log("Reading Test Lab folder '" + labText + "' ...");
+                var l = new TestLabFolder(client, labArg);
+                Log(string.Format("Found {0} test set(s) with {1} test case(s).", l.Sets.Count, l.InstanceCount));
+                var imgs = Util.ListImages(folder).Select(f => new ImageItem { File = f, Rel = Util.RelPath(folder, f) }).ToList();
+                AssignmentStore.Load(folder, domain, project, l, imgs);
+                int fromFolders = 0;
+                foreach (var img in imgs.Where(i => i.Assigned.Count == 0))
+                {
+                    var r = l.Resolve(folder, img.File);    // already sorted into <test set>\<test case> folders
+                    if (r.Instance != null) { img.Assigned.Add(r.Instance); fromFolders++; }
+                }
+                var sug = new Suggester(l);
+                foreach (var img in imgs.Where(i => i.Assigned.Count == 0))
+                    img.Suggestion = sug.Suggest(img.Rel);
+                Log(string.Format("Found {0} image(s): {1} already assigned, {2} with a suggestion.",
+                    imgs.Count, imgs.Count(i => i.Assigned.Count > 0), imgs.Count(i => i.Suggestion != null)));
+                if (fromFolders > 0) Log(fromFolders + " image(s) assigned from their <test set>\\<test case> folder.");
+                Ui(() =>
+                {
+                    lab = l;
+                    imageRoot = folder;
+                    images = imgs;
+                    if (fromFolders > 0) SaveAssignments();
+                    EnableAssignUi(true);
+                    RefreshImages();
+                    RefreshTree();
+                    UpdateSummary();
+                });
+            }, err => Log("ERROR: " + err), () => Ui(() => SetBusy(false)));
+        }
+
+        void ClearLoaded()
+        {
+            lab = null;
+            images = new List<ImageItem>();
+            if (lvImages == null) return;
+            lvImages.Items.Clear();
+            tree.Nodes.Clear();
+            lstCaseImages.Items.Clear();
+            SetPreview(null);
+            EnableAssignUi(false);
+            lblSummary.Text = "Choose the Test Lab folder and the image folder, then press Load.";
+        }
+
+        void EnableAssignUi(bool on)
+        {
+            foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnRemoveFromCase, btnUpload })
+                c.Enabled = on;
+        }
+
+        // ------------------------------------------------------------ lists
+        static string CaseText(TestLabFolder l, TestInstance i)
+        {
+            return l.SetOf(i).Name + "  >  " + i.Label;
+        }
+
+        List<ImageItem> SelectedImages()
+        {
+            return lvImages.SelectedItems.Cast<ListViewItem>().Select(it => (ImageItem)it.Tag).ToList();
+        }
+
+        void FillImageItem(ListViewItem it)
+        {
+            var img = (ImageItem)it.Tag;
+            string target, status;
+            Color color = SystemColors.WindowText;
+            if (img.Assigned.Count > 0)
+            {
+                target = string.Join(";  ", img.Assigned.Select(i => CaseText(lab, i)));
+                int up = img.Assigned.Count(i => img.Uploaded.Contains(i.Id));
+                status = up == img.Assigned.Count ? "uploaded" : up > 0 ? up + "/" + img.Assigned.Count + " uploaded" : "to upload";
+                if (up == img.Assigned.Count) color = Done;
+            }
+            else if (img.Suggestion != null)
+            {
+                target = "suggest:  " + CaseText(lab, img.Suggestion);
+                status = "";
+                color = Hint;
+            }
+            else
+            {
+                target = "";
+                status = "not assigned";
+                color = Warn;
+            }
+            it.SubItems[1].Text = target;
+            it.SubItems[2].Text = status;
+            it.ForeColor = color;
+        }
+
+        void RefreshImages()
+        {
+            if (lab == null) return;
+            var q = Util.Norm(txtImgFilter.Text);
+            var selected = new HashSet<ImageItem>(SelectedImages());
+            lvImages.BeginUpdate();
+            lvImages.Items.Clear();
+            foreach (var img in images)
+            {
+                if (chkOnlyUnassigned.Checked && img.Assigned.Count > 0) continue;
+                if (chkHideUploaded.Checked && img.FullyUploaded) continue;
+                if (q != "" && !Util.Norm(img.Rel).Contains(q)) continue;
+                var it = new ListViewItem(new[] { img.Rel, "", "" }) { Tag = img };
+                FillImageItem(it);
+                lvImages.Items.Add(it);
+                if (selected.Contains(img)) it.Selected = true;
+            }
+            lvImages.EndUpdate();
+        }
+
+        void RefreshImageRows(IEnumerable<ImageItem> changed)
+        {
+            var set = new HashSet<ImageItem>(changed);
+            foreach (ListViewItem it in lvImages.Items)
+                if (set.Contains((ImageItem)it.Tag)) FillImageItem(it);
+        }
+
+        int CountFor(TestInstance inst)
+        {
+            return images.Count(i => i.Assigned.Contains(inst));
+        }
+
+        string NodeText(TestInstance inst)
+        {
+            int n = CountFor(inst);
+            return n == 0 ? inst.Label : string.Format("{0}   ({1} image{2})", inst.Label, n, n == 1 ? "" : "s");
+        }
+
+        string NodeText(TestSet ts)
+        {
+            int n = ts.Instances.Count(i => CountFor(i) > 0);
+            return string.Format("{0}   ({1}/{2} test cases have images)", ts.PathText, n, ts.Instances.Count);
+        }
+
+        void RefreshTree()
+        {
+            if (lab == null) return;
+            var q = Util.Norm(txtTestFilter.Text);
+            var selected = tree.SelectedNode == null ? null : tree.SelectedNode.Tag;
+            var expanded = new HashSet<object>(tree.Nodes.Cast<TreeNode>().Where(n => n.IsExpanded).Select(n => n.Tag));
+            tree.BeginUpdate();
+            tree.Nodes.Clear();
+            TreeNode select = null;
+            foreach (var ts in lab.Sets)
+            {
+                bool setMatch = q == "" || Util.Norm(ts.PathText).Contains(q);
+                var cases = ts.Instances.Where(i => setMatch || Util.Norm(i.Label).Contains(q)).ToList();
+                if (cases.Count == 0) continue;
+                var sn = tree.Nodes.Add(NodeText(ts));
+                sn.Tag = ts;
+                foreach (var inst in cases)
+                {
+                    var cn = sn.Nodes.Add(NodeText(inst));
+                    cn.Tag = inst;
+                    if (CountFor(inst) > 0) cn.ForeColor = Done;
+                    if (inst == selected) select = cn;
+                }
+                if (ts == selected) select = sn;
+                if (q != "" || expanded.Contains(ts)) sn.Expand();
+            }
+            tree.EndUpdate();
+            if (select != null) { tree.SelectedNode = select; select.EnsureVisible(); }
+        }
+
+        void RefreshTreeCounts()
+        {
+            foreach (TreeNode sn in tree.Nodes)
+            {
+                sn.Text = NodeText((TestSet)sn.Tag);
+                foreach (TreeNode cn in sn.Nodes)
+                {
+                    var inst = (TestInstance)cn.Tag;
+                    cn.Text = NodeText(inst);
+                    cn.ForeColor = CountFor(inst) > 0 ? Done : SystemColors.WindowText;
+                }
+            }
+        }
+
+        void UpdateSummary()
+        {
+            if (lab == null) return;
+            int assigned = images.Count(i => i.Assigned.Count > 0);
+            int pairs = images.Sum(i => i.Assigned.Count);
+            int uploaded = images.Sum(i => i.Uploaded.Count(id => i.Assigned.Any(a => a.Id == id)));
+            int cases = lab.Sets.Sum(s => s.Instances.Count(inst => CountFor(inst) > 0));
+            lblSummary.Text = string.Format(
+                "{0} images:  {1} assigned,  {2} not assigned.     {3} of {4} test cases have images.     {5} of {6} attachments uploaded.",
+                images.Count, assigned, images.Count - assigned, cases, lab.InstanceCount, uploaded, pairs);
+        }
+
+        void OnImageSelected()
+        {
+            var sel = SelectedImages();
+            if (sel.Count != 1)
+            {
+                SetPreview(null);
+                lblPreview.Text = sel.Count > 1 ? sel.Count + " images selected" : "";
+                return;
+            }
+            var img = sel[0];
+            SetPreview(img.File);
+            lblPreview.Text = img.Rel + (img.Assigned.Count > 0 ? "   ->   " + string.Join(";  ", img.Assigned.Select(i => CaseText(lab, i))) : "");
+            var show = img.Assigned.Count > 0 ? img.Assigned[0] : img.Suggestion;
+            if (show != null) SelectCase(show);
+        }
+
+        void SelectCase(TestInstance inst)
+        {
+            foreach (TreeNode sn in tree.Nodes)
+                foreach (TreeNode cn in sn.Nodes)
+                    if (cn.Tag == inst) { tree.SelectedNode = cn; cn.EnsureVisible(); return; }
+        }
+
+        void SetPreview(string file)
+        {
+            var old = picPreview.Image;
+            picPreview.Image = null;
+            if (old != null) old.Dispose();
+            if (file == null) return;
+            try
+            {
+                // copy into memory so the file is not kept locked
+                using (var fs = File.OpenRead(file))
+                using (var img = Image.FromStream(fs))
+                    picPreview.Image = new Bitmap(img);
+            }
+            catch (Exception) { }
+        }
+
+        void OnCaseSelected()
+        {
+            lstCaseImages.Items.Clear();
+            var inst = tree.SelectedNode == null ? null : tree.SelectedNode.Tag as TestInstance;
+            if (inst == null)
+            {
+                lblCase.Text = "Images in the selected test case:";
+                return;
+            }
+            lblCase.Text = "Images in  " + CaseText(lab, inst) + "  (test case ID " + inst.Id + "):";
+            foreach (var img in images.Where(i => i.Assigned.Contains(inst)))
+                lstCaseImages.Items.Add(new CaseImage { Image = img, Uploaded = img.Uploaded.Contains(inst.Id) });
+        }
+
+        class CaseImage
+        {
+            public ImageItem Image;
+            public bool Uploaded;
+            public override string ToString() { return Image.Rel + (Uploaded ? "   (uploaded)" : ""); }
+        }
+
+        // ------------------------------------------------------ assigning
+        void AssignSelectedTo(TestInstance inst)
+        {
+            var sel = SelectedImages();
+            if (sel.Count == 0) { Say("Select one or more images on the left first."); return; }
+            Assign(sel, inst);
+        }
+
+        void Assign(List<ImageItem> imgs, TestInstance inst)
+        {
+            if (Busy()) return;
+            foreach (var img in imgs.Where(i => !i.Assigned.Contains(inst)))
+                img.Assigned.Add(inst);
+            Log(string.Format("Assigned {0} image(s) to {1}", imgs.Count, CaseText(lab, inst)));
+            AfterChange(imgs);
+        }
+
+        void AcceptSuggestions()
+        {
+            if (Busy()) return;
+            var sel = SelectedImages().Where(i => i.Assigned.Count == 0 && i.Suggestion != null).ToList();
+            if (sel.Count == 0) { Say("Select images that show a 'suggest:' test case first."); return; }
+            foreach (var img in sel) img.Assigned.Add(img.Suggestion);
+            Log(string.Format("Accepted the suggestion for {0} image(s).", sel.Count));
+            AfterChange(sel);
+        }
+
+        void UnassignSelected()
+        {
+            if (Busy()) return;
+            var sel = SelectedImages();
+            // uploaded ones stay: they are already in ALM
+            int removed = 0;
+            foreach (var img in sel)
+                removed += img.Assigned.RemoveAll(i => !img.Uploaded.Contains(i.Id));
+            if (removed > 0) Log(string.Format("Removed {0} assignment(s) that were not uploaded yet.", removed));
+            AfterChange(sel);
+        }
+
+        void RemoveFromCase()
+        {
+            if (Busy()) return;
+            var inst = tree.SelectedNode == null ? null : tree.SelectedNode.Tag as TestInstance;
+            if (inst == null) return;
+            var sel = lstCaseImages.SelectedItems.Cast<CaseImage>().Select(c => c.Image).ToList();
+            var notUploaded = sel.Where(i => !i.Uploaded.Contains(inst.Id)).ToList();
+            foreach (var img in notUploaded) img.Assigned.Remove(inst);
+            if (notUploaded.Count < sel.Count) Say("Images that are already uploaded stay in ALM and are kept in the list.");
+            AfterChange(notUploaded);
+        }
+
+        void AfterChange(IEnumerable<ImageItem> changed)
+        {
+            SaveAssignments();
+            if (chkOnlyUnassigned.Checked) RefreshImages(); else RefreshImageRows(changed);
+            RefreshTreeCounts();
+            OnCaseSelected();
+            UpdateSummary();
+        }
+
+        void SaveAssignments()
+        {
+            try { AssignmentStore.Save(imageRoot, client.Domain, client.Project, lab, images); }
+            catch (Exception e) { Log("Could not save assignments to the image folder: " + e.Message); }
+        }
+
+        // ------------------------------------------------------------ upload
+        void OnUpload(object sender, EventArgs e)
+        {
+            if (Busy() || lab == null) return;
+            var todo = images.SelectMany(img => img.Assigned.Where(i => !img.Uploaded.Contains(i.Id))
+                                                             .Select(i => new KeyValuePair<ImageItem, TestInstance>(img, i))).ToList();
+            if (todo.Count == 0) { Say("Nothing to upload: assign images to test cases first."); return; }
+            int cases = todo.Select(p => p.Value).Distinct().Count();
+            var q = string.Format("Upload {0} image attachment(s) to {1} test case(s) in ALM?", todo.Count, cases);
+            if (!Confirm(q)) return;
+            stopRequested = false;
+            SetBusy(true);
+            var l = lab;
+            RunBackground(() =>
+            {
+                var up = new Uploader(client, imageRoot, null, Log);
+                Log(string.Format("Uploading {0} attachment(s)...", todo.Count));
+                foreach (var pair in todo)
+                {
+                    if (stopRequested) break;
+                    if (up.UploadTo(pair.Key.File, l.SetOf(pair.Value), pair.Value))
+                    {
+                        var img = pair.Key;
+                        Ui(() =>
+                        {
+                            img.Uploaded.Add(pair.Value.Id);
+                            SaveAssignments();
+                            RefreshImageRows(new[] { img });
+                            UpdateSummary();
+                        });
+                    }
+                }
+                Log(string.Format("Done: {0} uploaded, {1} already there, {2} failed.", up.Ok, up.Skipped, up.Failed));
+                Ui(() =>
+                {
+                    OnCaseSelected();
+                    if (chkHideUploaded.Checked) RefreshImages();
+                    Say(string.Format("{0} uploaded, {1} already there, {2} failed.", up.Ok, up.Skipped, up.Failed), up.Failed > 0);
+                });
+            }, err => Log("ERROR: " + err), () => Ui(() => SetBusy(false)));
         }
 
         // ------------------------------------------------------------ settings
@@ -528,10 +961,6 @@ namespace AlmImageUploader
                 settings["lab_folder"] = txtLabFolder.Text.Trim();
                 settings["lab_folder_id"] = labFolderId ?? "";
                 settings["folder"] = txtFolder.Text.Trim();
-                settings["move"] = chkMove.Checked ? "1" : "0";
-                settings["move_to"] = txtMoveTo.Text.Trim();
-                settings["watch"] = chkWatch.Checked ? "1" : "0";
-                settings["interval"] = numInterval.Value.ToString();
             }
             var lines = settings.Select(kv => kv.Key + "=" + kv.Value).ToArray();
             foreach (var path in SettingsPaths())
@@ -549,66 +978,11 @@ namespace AlmImageUploader
             }
         }
 
-        // ---------------------------------------------------------- validation
-        bool CheckFields(bool needFolder)
-        {
-            if (txtLabFolder.Text.Trim() == "")
-            {
-                Warn("Choose the Test Lab folder (press 'Browse ALM...').");
-                return false;
-            }
-            if (txtFolder.Text.Trim() == "")
-            {
-                Warn("Choose the image folder on this computer.");
-                return false;
-            }
-            if (needFolder && !Directory.Exists(txtFolder.Text.Trim()))
-            {
-                Warn("Image folder not found:\n" + txtFolder.Text + "\n\nTip: press 'Create image folders' first.");
-                return false;
-            }
-            return true;
-        }
-
-        bool ValidateUpload()
-        {
-            if (!chkMove.Checked) return true;
-            var moveTo = txtMoveTo.Text.Trim();
-            if (moveTo == "")
-            {
-                Warn("Choose the folder to move uploaded images to.");
-                return false;
-            }
-            var folder = Path.GetFullPath(txtFolder.Text.Trim()).TrimEnd('\\', '/');
-            var full = Path.GetFullPath(moveTo).TrimEnd('\\', '/');
-            if (full.Equals(folder, StringComparison.OrdinalIgnoreCase) ||
-                full.StartsWith(folder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            {
-                Warn("The 'move to' folder must be outside the image folder.");
-                return false;
-            }
-            return true;
-        }
-
-        void Warn(string msg)
-        {
-            MessageBox.Show(this, msg, AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-
-        void OnMake(object sender, EventArgs e)
-        {
-            if (!CheckFields(false)) return;
-            var msg = "Create one folder per test set and test case inside\n" + txtFolder.Text.Trim() +
-                      "\n\nExisting folders and files are kept.";
-            if (MessageBox.Show(this, msg, AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                Start(JobMake);
-        }
-
         void OnClosing(object sender, FormClosingEventArgs e)
         {
             if (Busy())
             {
-                if (MessageBox.Show(this, "Still working. Stop and exit?", AppName, MessageBoxButtons.YesNo) != DialogResult.Yes)
+                if (!Confirm("Still working. Stop and exit?"))
                 {
                     e.Cancel = true;
                     return;
@@ -660,139 +1034,10 @@ namespace AlmImageUploader
 
         void SetBusy(bool busy)
         {
-            btnCheck.Enabled = btnMake.Enabled = btnUpload.Enabled = btnPickLab.Enabled = !busy;
+            btnLoad.Enabled = btnPickLab.Enabled = !busy;
+            EnableAssignUi(!busy && lab != null);
             btnStop.Enabled = busy;
-        }
-
-        void Start(Action job)
-        {
-            SaveSettings();
-            // jobs run on a worker thread and must not touch the controls
-            cfg = new Config
-            {
-                LabFolder = labFolderId ?? txtLabFolder.Text.Trim(), LabFolderText = txtLabFolder.Text.Trim(),
-                Folder = txtFolder.Text.Trim(), MoveTo = chkMove.Checked ? txtMoveTo.Text.Trim() : null,
-                Watch = chkWatch.Checked, Interval = (int)numInterval.Value,
-            };
-            stopRequested = false;
-            SetBusy(true);
-            RunBackground(job, err => Log("ERROR: " + err), () => Ui(() => SetBusy(false)));
-        }
-
-        // ---------------------------------------------------------------- jobs
-        TestLabFolder LoadLab()
-        {
-            Log("Reading Test Lab folder '" + cfg.LabFolderText + "' ...");
-            var lab = new TestLabFolder(client, cfg.LabFolder);
-            Log(string.Format("Found {0} test set(s) with {1} test case(s).", lab.Sets.Count, lab.InstanceCount));
-            return lab;
-        }
-
-        List<PlanItem> ShowPlan(TestLabFolder lab)
-        {
-            var plan = Directory.Exists(cfg.Folder) ? lab.Plan(cfg.Folder) : new List<PlanItem>();
-            var perInst = plan.Where(p => p.Instance != null).GroupBy(p => p.Instance.Id)
-                              .ToDictionary(g => g.Key, g => g.Count());
-            var bad = plan.Where(p => p.Instance == null).ToList();
-            int empty = lab.Sets.Sum(s => s.Instances.Count(i => !perInst.ContainsKey(i.Id)));
-            Ui(() =>
-            {
-                tree.BeginUpdate();
-                tree.Nodes.Clear();
-                foreach (var ts in lab.Sets)
-                {
-                    int n = ts.Instances.Sum(i => perInst.ContainsKey(i.Id) ? perInst[i.Id] : 0);
-                    var parent = tree.Nodes.Add(string.Format("{0}   ({1} image(s), test set ID {2})", ts.PathText, n, ts.Id));
-                    parent.NodeFont = new Font(tree.Font, FontStyle.Bold);
-                    parent.Text = parent.Text; // re-measure with the bold font
-                    foreach (var i in ts.Instances)
-                    {
-                        int k;
-                        perInst.TryGetValue(i.Id, out k);
-                        var node = parent.Nodes.Add(k > 0 ? string.Format("{0}   -  {1} image(s), ready", i.Label, k)
-                                                          : i.Label + "   -  no images");
-                        if (k == 0) node.ForeColor = Color.DarkOrange;
-                    }
-                    if (lab.Sets.Count <= 5) parent.Expand();
-                }
-                if (bad.Count > 0)
-                {
-                    var parent = tree.Nodes.Add(string.Format("Images NOT matched ({0}) - fix the folder name", bad.Count));
-                    parent.ForeColor = Color.Firebrick;
-                    foreach (var item in bad)
-                        parent.Nodes.Add(Util.RelPath(cfg.Folder, item.File) + "   -  " + item.Error).ForeColor = Color.Firebrick;
-                    parent.Expand();
-                }
-                tree.EndUpdate();
-                lblSummary.Text = string.Format(
-                    "{0} image(s) ready for {1} test case(s).    {2} test case(s) without images.    {3} image(s) not matched.",
-                    plan.Count - bad.Count, perInst.Count, empty, bad.Count);
-            });
-            return plan;
-        }
-
-        void JobCheck()
-        {
-            ShowPlan(LoadLab());
-            Log("Check done. Nothing was uploaded.");
-        }
-
-        void JobMake()
-        {
-            var lab = LoadLab();
-            int made = lab.MakeFolders(cfg.Folder);
-            Log(string.Format("Created {0} new test case folder(s) in {1}", made, cfg.Folder));
-            ShowPlan(lab);
-            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
-                System.Diagnostics.Process.Start("explorer.exe", "\"" + cfg.Folder + "\"");
-        }
-
-        void JobUpload()
-        {
-            Uploader up = null;
-            try
-            {
-                var lab = LoadLab();
-                var plan = ShowPlan(lab);
-                up = new Uploader(client, cfg.Folder, cfg.MoveTo, Log);
-                var todo = plan.Where(p => p.Instance != null).ToList();
-                Log(string.Format("Uploading {0} image(s)...", todo.Count));
-                foreach (var item in todo)
-                {
-                    if (stopRequested) break;
-                    up.Handle(item);
-                }
-                foreach (var item in plan) up.Done.Add(item.File); // unmatched ones are shown in the list
-
-                if (cfg.Watch && !stopRequested)
-                {
-                    Log(string.Format("Watching the image folder every {0}s. Press Stop to finish.", cfg.Interval));
-                    while (!stopRequested)
-                    {
-                        for (int t = 0; t < cfg.Interval * 10 && !stopRequested; t++)
-                            Thread.Sleep(100);
-                        if (stopRequested) break;
-                        foreach (var file in Util.ListImages(cfg.Folder))
-                        {
-                            if (stopRequested) break;
-                            if (!up.Done.Contains(file) && Util.FileIsStable(file))
-                                up.Handle(lab.Resolve(cfg.Folder, file));
-                        }
-                    }
-                }
-            }
-            finally
-            {
-                if (up != null)
-                {
-                    Log(string.Format("Done: {0} uploaded, {1} skipped, {2} failed.", up.Ok, up.Skipped, up.Failed));
-                    if (up.Ok > 0 && !cfg.Watch)
-                    {
-                        var msg = string.Format("{0} image(s) uploaded.\n{1} skipped, {2} failed.", up.Ok, up.Skipped, up.Failed);
-                        Ui(() => MessageBox.Show(this, msg, AppName, MessageBoxButtons.OK, MessageBoxIcon.Information));
-                    }
-                }
-            }
+            UseWaitCursor = busy;
         }
     }
 

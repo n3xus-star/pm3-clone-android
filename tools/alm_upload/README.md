@@ -14,8 +14,17 @@ nothing to install and no Python. It works step by step:
 
 1. Log in (ALM URL, username, password).
 2. Choose the domain and project from lists loaded from ALM.
-3. Choose the Test Lab folder with **Browse ALM...** (the Test Lab folder tree),
-   choose the image folder, then **Create image folders** → **Check** → **Upload**.
+3. Choose the Test Lab folder with **Browse ALM...** (the Test Lab folder tree) and
+   the image folder, then **Load**. Images can sit in one flat folder with any names:
+   - left: the images, with a preview and a suggested test case (from the file name)
+   - right: the test sets and test cases, with how many images each has
+   - pick images (Ctrl/Shift+click) and a test case, then **Assign** (or drag the
+     images onto the test case, or double-click it); one image can go to several
+     test cases; **Accept suggestion** takes the suggested test case
+   - **Upload assigned images** uploads everything not uploaded yet
+   The assignments and what was uploaded are saved in `ALM-assignments.txt` in the
+   image folder, so the work can continue later without uploading twice. Images that
+   already sit in `<test set>\<test case>` folders are assigned automatically.
  It is a C# port of the same logic
 (`AlmCore.cs`, `MainForm.cs`) and uses the Windows certificate store and proxy
 settings automatically.
