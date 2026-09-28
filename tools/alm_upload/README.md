@@ -1,114 +1,115 @@
-# ALM Image Auto Upload
+# ALM Image Uploader
 
-A script that uploads images (screenshots) automatically as attachments to
-**HP ALM / Micro Focus ALM / OpenText ALM**. Its main job is attaching images
-to **every test case in a Test Lab test set** (the `test-instances` entity).
+A portable Windows program that uploads screenshots as attachments to the
+**test cases in Test Lab** of **HP ALM / Micro Focus ALM / OpenText ALM**.
+It covers every test set under one Test Lab folder in a single run.
 
-It runs on a PC or laptop that can reach the ALM server. It is not part of the
-Android app.
+No Python and no installation needed: one `.exe` file.
 
-## Install
+## Download
 
-```bash
-pip install -r requirements.txt
+1. Open the repository on GitHub → **Actions** → **Build ALM Image Uploader (Windows)**.
+2. Open the latest green run → **Artifacts** → download `ALM-Image-Uploader-windows`.
+3. Unzip it. `ALM-Image-Uploader.exe` is the program. Copy it anywhere (Desktop, USB drive).
+
+> Windows SmartScreen may say "Windows protected your PC" because the file is
+> not signed. Click **More info → Run anyway**. If your company's antivirus
+> blocks it, ask IT to allow the file.
+
+## How it works
+
+Images are placed in folders that follow the Test Lab structure:
+
+```
+Images\                          <- "Image folder"
+  Sprint 12 Regression\          <- test set name
+    Login Test\                  <- test case name
+      step1.png
+      step2.png
+    Logout Test\
+      result.png
+  Sprint 12 Smoke\
+    Login Test\
+      step1.png
 ```
 
-## Settings (once)
+Each image is attached to that test case **inside that test set** (the test
+instance). So `Login Test` in two different test sets each gets its own images.
 
-```bash
-# Linux / macOS
-export ALM_URL=https://alm.company.com/qcbin
-export ALM_DOMAIN=DEFAULT
-export ALM_PROJECT=MyProject
-export ALM_USER=myuser
-# ALM_PASSWORD is optional. If it is not set, the script asks for it.
-```
+## Steps
 
-On Windows (cmd), use `set ALM_URL=...` instead of `export`.
+1. **ALM login**: ALM URL (e.g. `https://alm.company.com/qcbin`), Domain,
+   Project, Username, Password.
+2. **Test Lab folder**: the folder path as shown in Test Lab, e.g.
+   `Root\Release 1\Sprint 12`, or the folder ID. Every test set in that folder
+   and its sub folders is included.
+3. **Image folder**: where the screenshots are kept on the laptop.
+4. Press **Create image folders**. The program creates one folder per test set
+   and test case, with the exact names from ALM. Put the screenshots into them.
+5. Press **Check**. The list shows every test set and test case with the number
+   of images found:
+   - orange `no images`: that test case has no screenshot yet
+   - red `Images NOT matched`: images in the wrong place, with the reason
+6. Press **Upload**.
 
-You can also pass these as flags: `--url --domain --project --user --password`.
-To log in with an API key, use `--client-id` and `--secret` (or `ALM_CLIENT_ID` and `ALM_SECRET`).
+Images that are already attached to the test case (same file name) are skipped,
+so running Upload again is safe.
 
-## Test Lab: attach images to each test case
+### Options
 
-1. Check the test cases in the test set:
+- **After upload, move images to**: moves every uploaded image to another
+  folder (it keeps the same test set\test case layout), so the image folder only
+  holds what is still pending.
+- **Keep watching**: after the upload, the program keeps running and uploads any
+  new image placed in the folders automatically. Press **Stop** to finish.
+- **Skip SSL certificate check**: only if the connection fails because of the
+  company certificate.
 
-   ```bash
-   python alm_upload.py --test-set "Sprint 12 Regression" --list
-   ```
+Settings (not the password) are saved in `alm_uploader_settings.json` next to
+the `.exe`.
 
-   (Use `--test-set-id 101` if you know the ID, or if the name is not unique.)
+### Special cases
 
-2. Arrange the images in one of these ways.
-
-   **A. One folder per test case (recommended).** Name each folder after the test:
-
-   ```
-   shots/
-     Login Test/
-       step1.png
-       step2.png
-     Logout Test/
-       result.png
-   ```
-
-   ```bash
-   python alm_upload.py --test-set "Sprint 12 Regression" --folder shots --recursive
-   ```
-
-   **B. File name starts with the test name:** `Login Test_step1.png`, `Logout Test_1.jpg`
-
-   ```bash
-   python alm_upload.py --test-set "Sprint 12 Regression" --folder shots
-   ```
-
-   Name matching ignores case, and treats spaces, `_`, `-` and `.` as the same
-   (`login_test` = `Login Test`).
-
-   **C. File name starts with the Test Plan test ID:** `2345_step1.png`
-
-   ```bash
-   python alm_upload.py --test-set-id 101 --folder shots --match test-id
-   ```
-
-   **D. File name starts with the test instance ID:** `--match instance-id`
-
-   **E. Same image on every test case:**
-
-   ```bash
-   python alm_upload.py --test-set-id 101 --match all evidence.png
-   ```
-
-## Auto mode (watch folder)
-
-The script keeps running and uploads every new screenshot as soon as it lands
-in the folder:
-
-```bash
-python alm_upload.py --test-set-id 101 --folder shots --recursive --watch --move-to uploaded
-```
-
-`--move-to uploaded` moves each file into the `uploaded` folder after its upload
-succeeds. Press Ctrl+C to stop.
-
-## Other useful options
-
-| Option | Purpose |
+| Case | What to do |
 |---|---|
-| `--dry-run` | Show which images would go to which test case, without uploading |
-| `--prefix "TC_"` | Add a prefix to the attachment name in ALM |
-| `--allow-duplicates` | Upload even if an attachment with the same name already exists (skipped by default) |
-| `--delete-after` | Delete the local file after it uploads |
-| `--insecure` / `--ca-bundle file.pem` | For ALM servers with a self-signed certificate |
+| The same test is in one test set twice | The folders are named `[1]Login Test` and `[2]Login Test` (Create image folders does this) |
+| Two test sets have the same name in different sub folders | Their folders follow the sub folder path, e.g. `Images\Smoke\Regression\...` (Create image folders does this) |
+| Test name has `: / \ * ? " < > \|` | These become `_` in the folder name and still match |
+| Screenshot in a sub folder of a test case folder | Allowed, e.g. `Login Test\Run 2\x.png` |
+| Screenshot directly in the test set folder | Allowed if the file name starts with the test name, e.g. `Login Test_1.png` |
 
-## Other entities
+## Command-line version
 
-```bash
-# defect 123
-python alm_upload.py --entity defects --id 123 a.png b.png
-# ID from the file name (123_error.png -> defect 123)
-python alm_upload.py --entity defects --folder shots --id-from-filename
+`alm_upload.exe` (in the same download) or `python alm_upload.py` does the same
+from a command prompt, for scripts or the Windows Task Scheduler:
+
+```bat
+set ALM_URL=https://alm.company.com/qcbin
+set ALM_DOMAIN=DEFAULT
+set ALM_PROJECT=MyProject
+set ALM_USER=myuser
+set ALM_PASSWORD=...
+
+rem list test sets / test cases
+alm_upload.exe --lab-folder "Root\Release 1\Sprint 12" --list
+rem create the image folders
+alm_upload.exe --lab-folder "Root\Release 1\Sprint 12" --folder C:\Images --make-folders
+rem preview, then upload
+alm_upload.exe --lab-folder "Root\Release 1\Sprint 12" --folder C:\Images --dry-run
+alm_upload.exe --lab-folder "Root\Release 1\Sprint 12" --folder C:\Images --move-to C:\Images_done
+rem keep watching
+alm_upload.exe --lab-folder "Root\Release 1\Sprint 12" --folder C:\Images --watch --interval 10
 ```
 
-Supported entities: `defects, tests, test-instances, runs, run-steps, design-steps,
-requirements, test-sets, test-folders, releases, release-cycles`.
+Other modes: one test set (`--test-set "Name"` or `--test-set-id 101`) and
+other entities (`--entity defects --id 123 a.png`). See `alm_upload.exe --help`.
+
+## Building the .exe yourself
+
+The GitHub Actions workflow `.github/workflows/build-alm-uploader.yml` builds it
+on every change under `tools/alm_upload/`. To build it on a Windows PC that has Python:
+
+```bat
+pip install pyinstaller requests truststore
+pyinstaller --onefile --windowed --name ALM-Image-Uploader --hidden-import truststore alm_upload_gui.py
+```

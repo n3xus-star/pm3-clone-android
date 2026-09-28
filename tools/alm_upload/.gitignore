@@ -1,0 +1,6 @@
+__pycache__/
+build/
+dist/
+package/
+*.spec
+alm_uploader_settings.json

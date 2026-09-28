@@ -3,8 +3,19 @@
 alm_upload.py - Auto upload images as attachments to HP ALM / Micro Focus ALM /
 OpenText ALM (Quality Center) through the ALM REST API.
 
-Main use: attach screenshots to every test case (test instance) in a
-Test Lab test set.
+Main use: attach screenshots to every test case (test instance) of every
+test set under one Test Lab folder. Images are laid out as
+<image folder>/<test set>/<test case>/*.png:
+
+  # list test sets and test cases, then create the matching image folders
+  alm_upload.py --lab-folder "Root\\Release 1\\Sprint 12" --list
+  alm_upload.py --lab-folder "Root\\Release 1\\Sprint 12" --folder shots --make-folders
+
+  # preview, then upload (and keep watching for new screenshots)
+  alm_upload.py --lab-folder "Root\\Release 1\\Sprint 12" --folder shots --dry-run
+  alm_upload.py --lab-folder "Root\\Release 1\\Sprint 12" --folder shots --watch
+
+Single test set mode:
 
   # list the test cases in a test set
   alm_upload.py --test-set "Sprint 12 Regression" --list
@@ -172,6 +183,15 @@ class AlmClient:
                 return out
             start += len(batch)
 
+    def get_by_ids(self, collection, field, ids, fields=None, chunk=50):
+        """get_entities() for `field` in `ids`, split in chunks to keep URLs short."""
+        ids = sorted({str(i) for i in ids if i not in (None, "")})
+        out = []
+        for n in range(0, len(ids), chunk):
+            query = "{{{}[{}]}}".format(field, " OR ".join(ids[n:n + chunk]))
+            out += self.get_entities(collection, query=query, fields=fields)
+        return out
+
     # ------------------------------------------------------- attachments
     def list_attachment_names(self, entity, entity_id):
         r = self._request("GET", self._entity_url(entity, entity_id) + "/attachments")
@@ -239,8 +259,23 @@ def file_is_stable(path, wait=1.0):
 
 
 def _norm(s):
-    """Lower-case and collapse separators so 'Login_Test' matches 'Login Test'."""
-    return re.sub(r"[\s_\-.]+", " ", (s or "").lower()).strip()
+    """Lower-case and collapse separators so 'Login_Test' matches 'Login Test'.
+
+    Characters Windows does not allow in folder names count as separators too,
+    so a test called 'Login: admin/user' matches the folder 'Login_ admin_user'.
+    """
+    return re.sub(r'[\s_\-.\\/:*?"<>|]+', " ", (s or "").lower()).strip()
+
+
+def safe_folder_name(name):
+    """Folder name Windows accepts, that still matches `name` via _norm()."""
+    name = re.sub(r'[\\/:*?"<>|]', "_", name or "").strip().rstrip(". ")
+    return name or "_"
+
+
+def _query_value(name):
+    # ALM query strings cannot escape quotes; use a wildcard and filter exactly later
+    return name.replace("'", "*")
 
 
 # ------------------------------------------------------------- Test Lab
@@ -282,8 +317,10 @@ class TestLab:
     @staticmethod
     def find_test_set(client, name):
         sets = client.get_entities(
-            "test-sets", query="{{name['{}']}}".format(name), fields=["id", "name", "parent-id"]
+            "test-sets", query="{{name['{}']}}".format(_query_value(name)),
+            fields=["id", "name", "parent-id"],
         )
+        sets = [x for x in sets if (x.get("name") or "").lower() == name.lower()]
         if not sets:
             raise AlmError("test set '{}' not found".format(name))
         if len(sets) > 1:
@@ -320,12 +357,191 @@ class TestLab:
         return [m.group(1)] if m.group(1) in self.by_id else []  # mode == "instance-id"
 
 
+class TestLabFolder:
+    """Every test set and test case under one Test Lab folder (and its sub folders).
+
+    Local images are expected as <image root>/<test set>/<test case>/<image>.
+    When two test sets share a name, the sub folder path from the chosen Test Lab
+    folder is used instead: <image root>/<sub folder>/<test set>/<test case>/.
+    A test that is in a set more than once uses its instance name, e.g. "[2]Login".
+    """
+
+    def __init__(self, client, folder):
+        self.client = client
+        self.folder_id = self._resolve_folder(str(folder).strip())
+
+        # all sub folders: id -> path (tuple of names) relative to the chosen folder
+        paths = {self.folder_id: ()}
+        frontier = [self.folder_id]
+        while frontier:
+            children = client.get_by_ids("test-set-folders", "parent-id", frontier,
+                                         fields=["id", "name", "parent-id"])
+            frontier = []
+            for c in children:
+                if c["id"] not in paths and c.get("parent-id") in paths:
+                    paths[c["id"]] = paths[c["parent-id"]] + (c.get("name") or "",)
+                    frontier.append(c["id"])
+
+        self.sets = []
+        for ts in client.get_by_ids("test-sets", "parent-id", list(paths),
+                                    fields=["id", "name", "parent-id"]):
+            if ts.get("parent-id") in paths:
+                ts["path"] = paths[ts["parent-id"]] + (ts.get("name") or "",)
+                ts["instances"] = []
+                self.sets.append(ts)
+        self.sets.sort(key=lambda x: [p.lower() for p in x["path"]])
+        by_set = {ts["id"]: ts for ts in self.sets}
+
+        instances = client.get_by_ids(
+            "test-instances", "cycle-id", list(by_set),
+            fields=["id", "test-id", "cycle-id", "test-order", "name"])
+        names = {t["id"]: t.get("name") or "" for t in client.get_by_ids(
+            "tests", "id", [i.get("test-id") for i in instances], fields=["id", "name"])}
+        for inst in instances:
+            inst["test-name"] = names.get(inst.get("test-id"), "")
+            if inst.get("cycle-id") in by_set:
+                by_set[inst["cycle-id"]]["instances"].append(inst)
+        for ts in self.sets:
+            ts["instances"].sort(key=lambda i: int(i.get("test-order") or 0))
+            counts = {}
+            for i in ts["instances"]:
+                counts[i["test-id"]] = counts.get(i["test-id"], 0) + 1
+            for i in ts["instances"]:
+                i["repeated"] = counts[i["test-id"]] > 1
+                i["label"] = (i.get("name") or i["test-name"]) if i["repeated"] else i["test-name"]
+
+        # local folder keys -> test sets: full sub folder path (exact) or set name alone
+        self.path_index = {tuple(_norm(p) for p in ts["path"]): ts for ts in self.sets}
+        self.name_index = {}
+        for ts in self.sets:
+            self.name_index.setdefault(_norm(ts["name"]), []).append(ts)
+
+    # ------------------------------------------------------------ folders
+    def _resolve_folder(self, folder):
+        if folder.isdigit():
+            return folder
+        parts = [p for p in re.split(r"[\\/]+", folder) if p.strip()]
+        if parts and parts[0].strip().lower() == "root":
+            parts = parts[1:]
+        if not parts:
+            raise AlmError("choose a Test Lab folder below Root, e.g. Root\\Release 1")
+
+        def named(name, parent_ids=None):
+            q = "{{name['{}']}}".format(_query_value(name))
+            found = self.client.get_entities("test-set-folders", query=q,
+                                             fields=["id", "name", "parent-id"])
+            return [f for f in found if (f.get("name") or "").lower() == name.lower()
+                    and (parent_ids is None or f.get("parent-id") in parent_ids)]
+
+        candidates = named(parts[0].strip())
+        if len(candidates) > 1:
+            # prefer the one directly under Root
+            parents = {f["id"]: f for f in self.client.get_by_ids(
+                "test-set-folders", "id", [c.get("parent-id") for c in candidates],
+                fields=["id", "name"])}
+            top = [c for c in candidates
+                   if (parents.get(c.get("parent-id"), {}).get("name") or "").lower() == "root"]
+            candidates = top or candidates
+        for part in parts[1:]:
+            candidates = named(part.strip(), {c["id"] for c in candidates})
+        if not candidates:
+            raise AlmError("Test Lab folder not found: " + folder)
+        if len(candidates) > 1:
+            raise AlmError("Test Lab folder '{}' is ambiguous (ids: {}); enter the folder id".format(
+                folder, ", ".join(c["id"] for c in candidates)))
+        return candidates[0]["id"]
+
+    @property
+    def instance_count(self):
+        return sum(len(ts["instances"]) for ts in self.sets)
+
+    def local_set_path(self, ts):
+        """Relative local folder parts for a test set (name alone when unique)."""
+        if len(self.name_index[_norm(ts["name"])]) == 1:
+            return (ts["name"],)
+        return ts["path"]
+
+    def make_folders(self, image_root):
+        """Create <image root>/<test set>/<test case> folders. Returns number created."""
+        made = 0
+        for ts in self.sets:
+            base = os.path.join(image_root, *[safe_folder_name(p) for p in self.local_set_path(ts)])
+            for inst in ts["instances"]:
+                path = os.path.join(base, safe_folder_name(inst["label"]))
+                if not os.path.isdir(path):
+                    os.makedirs(path)
+                    made += 1
+        return made
+
+    # ------------------------------------------------------------ matching
+    def resolve(self, image_root, path):
+        """Return (test set, test instance, error) for one local image."""
+        rel = os.path.relpath(path, image_root)
+        parts = rel.split(os.sep)
+        dirs = [_norm(d) for d in parts[:-1]]
+        if not dirs:
+            return None, None, "image must be inside a <test set>\\<test case> folder"
+        for k in range(len(dirs), 0, -1):
+            exact = self.path_index.get(tuple(dirs[:k]))
+            sets = [exact] if exact else (self.name_index.get(dirs[0], []) if k == 1 else [])
+            if not sets:
+                continue
+            if len(sets) > 1:
+                return None, None, "{} test sets are named '{}'; put the images under {}".format(
+                    len(sets), parts[k - 1], " or ".join(
+                        "\\".join(ts["path"]) for ts in sets))
+            ts = sets[0]
+            if k < len(dirs):
+                inst, err = self._find_instance(ts, dirs[k], parts[k])
+            else:
+                inst, err = self._find_by_file_name(ts, parts[-1])
+            return ts, inst, err
+        return None, None, "no test set named '{}' in this Test Lab folder".format(parts[0])
+
+    @staticmethod
+    def _find_instance(ts, key, shown):
+        insts = ts["instances"]
+        for match in (
+            [i for i in insts if key.isdigit() and i["id"] == key],
+            [i for i in insts if i.get("name") and _norm(i["name"]) == key],
+            [i for i in insts if _norm(i["test-name"]) == key],
+        ):
+            if len(match) == 1:
+                return match[0], None
+            if len(match) > 1:
+                return None, "'{}' is in test set '{}' {} times; name the folder like '{}'".format(
+                    shown, ts["name"], len(match), match[0].get("name") or "[1]" + shown)
+        return None, "no test case '{}' in test set '{}'".format(shown, ts["name"])
+
+    @staticmethod
+    def _find_by_file_name(ts, file_name):
+        stem = _norm(os.path.splitext(file_name)[0])
+        best = None
+        for i in ts["instances"]:
+            key = _norm(i["label"])
+            if key and (stem == key or stem.startswith(key + " ")):
+                if best is None or len(key) > len(_norm(best["label"])):
+                    best = i
+        if best is None:
+            return None, "put it in a test case folder inside '{}'".format(ts["name"])
+        if best["repeated"] and not (best.get("name") and stem.startswith(_norm(best["name"]))):
+            return None, "test '{}' is in the set more than once; use a '{}' folder".format(
+                best["test-name"], best.get("name") or "[1]" + best["test-name"])
+        return best, None
+
+    def plan(self, image_root, recursive=True):
+        """Resolve every image under image_root: list of dicts path/set/instance/error."""
+        return [dict(zip(("set", "instance", "error"), self.resolve(image_root, p)), path=p)
+                for p in list_images(image_root, recursive)]
+
+
 # -------------------------------------------------------------- uploader
 class Uploader:
-    def __init__(self, client, args, resolver):
+    def __init__(self, client, args, resolver, log=print):
         self.client = client
         self.args = args
         self.resolver = resolver  # path -> list of entity ids
+        self.log = log
         self.existing = {}  # entity_id -> set of attachment names already in ALM
         self.done = set()   # local paths handled in this run
         self.ok = 0
@@ -341,9 +557,10 @@ class Uploader:
 
     def handle(self, path):
         self.done.add(path)
-        ids = self.resolver(path)
-        if not ids:
-            print("[SKIP] {} - no matching {} found".format(path, self.args.entity))
+        ids = self.resolver(path)  # list of ids, or an error message
+        if not ids or isinstance(ids, str):
+            self.log("[SKIP] {} - {}".format(
+                path, ids or "no matching {} found".format(self.args.entity)))
             self.skipped += 1
             return
         name = self.args.prefix + os.path.basename(path)
@@ -358,20 +575,20 @@ class Uploader:
         target = "{} {}".format(args.entity, entity_id)
         try:
             if not args.allow_duplicates and name in self._existing_names(entity_id):
-                print("[SKIP] {} - already attached to {}".format(name, target))
+                self.log("[SKIP] {} - already attached to {}".format(name, target))
                 self.skipped += 1
                 return True
             if args.dry_run:
-                print("[DRY ] {} -> {}".format(path, target))
+                self.log("[DRY ] {} -> {}".format(path, target))
                 self.ok += 1
                 return True
             self.client.upload_attachment(args.entity, entity_id, path, name)
             self._existing_names(entity_id).add(name)
-            print("[ OK ] {} -> {}".format(name, target))
+            self.log("[ OK ] {} -> {}".format(name, target))
             self.ok += 1
             return True
         except (AlmError, requests.RequestException, OSError) as e:
-            print("[FAIL] {} -> {}: {}".format(name, target, e))
+            self.log("[FAIL] {} -> {}: {}".format(name, target, e))
             self.failed += 1
             return False
 
@@ -379,8 +596,13 @@ class Uploader:
         if self.args.dry_run:
             return
         if self.args.move_to:
-            os.makedirs(self.args.move_to, exist_ok=True)
-            dest = os.path.join(self.args.move_to, os.path.basename(path))
+            # keep the <test set>/<test case> structure below the image folder
+            root = getattr(self.args, "folder", None)
+            rel = os.path.relpath(path, root) if root else os.path.basename(path)
+            if rel.startswith(os.pardir):
+                rel = os.path.basename(path)
+            dest = os.path.join(self.args.move_to, rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
             if os.path.exists(dest):
                 base, ext = os.path.splitext(dest)
                 dest = "{}_{}{}".format(base, int(time.time()), ext)
@@ -406,7 +628,15 @@ def parse_args(argv=None):
     p.add_argument("--secret", default=os.environ.get("ALM_SECRET"),
                    help="API key secret (env ALM_SECRET)")
 
-    tl = p.add_argument_group("Test Lab (attach to test cases in a test set)")
+    lf = p.add_argument_group(
+        "Test Lab folder (attach to test cases of every test set in a folder)",
+        "Images go in <--folder>/<test set>/<test case>/*.png")
+    lf.add_argument("--lab-folder",
+                    help=r"Test Lab folder path (e.g. 'Root\Release 1\Sprint 12') or folder id")
+    lf.add_argument("--make-folders", action="store_true",
+                    help="Create the <test set>/<test case> folders inside --folder and exit")
+
+    tl = p.add_argument_group("Single test set (attach to test cases in one test set)")
     tl.add_argument("--test-set-id", help="Test Lab test set id (cycle id)")
     tl.add_argument("--test-set", help="Test Lab test set name (must be unique)")
     tl.add_argument("--match", default="name",
@@ -417,7 +647,7 @@ def parse_args(argv=None):
                          "instance-id = file name starts with the test instance id; "
                          "all = attach every image to every test case in the set")
     tl.add_argument("--list", action="store_true",
-                    help="Only list the test cases in the test set and exit")
+                    help="Only list the test sets / test cases and exit")
 
     ot = p.add_argument_group("Other entities")
     ot.add_argument("--entity", choices=ENTITIES,
@@ -448,23 +678,35 @@ def parse_args(argv=None):
 
     args.testlab = bool(args.test_set_id or args.test_set)
     if args.entity is None:
-        args.entity = "test-instances" if args.testlab else "defects"
+        args.entity = "test-instances" if (args.testlab or args.lab_folder) else "defects"
 
     missing = [n for n in ("url", "domain", "project") if not getattr(args, n)]
     if missing:
         p.error("missing: " + ", ".join("--" + m for m in missing))
     if not (args.client_id and args.secret) and not args.user:
         p.error("give --user (and password) or --client-id/--secret")
-    if args.testlab:
+    if args.lab_folder:
+        if args.entity != "test-instances" or args.testlab or args.id or args.id_from_filename:
+            p.error("--lab-folder cannot be combined with --entity/--test-set/--id options")
+        if args.files:
+            p.error("with --lab-folder give the image root as --folder, not single files")
+        if not args.folder and not args.list:
+            p.error("--lab-folder needs --folder (the local image root)")
+        args.recursive = True
+    elif args.make_folders:
+        p.error("--make-folders needs --lab-folder")
+    elif args.testlab:
         if args.entity != "test-instances":
             p.error("--test-set/--test-set-id only works with --entity test-instances")
         if args.id or args.id_from_filename:
             p.error("use --match instead of --id/--id-from-filename with a test set")
     elif args.list:
-        p.error("--list needs --test-set or --test-set-id")
+        p.error("--list needs --lab-folder, --test-set or --test-set-id")
     elif not args.id and not args.id_from_filename:
-        p.error("give --test-set/--test-set-id, --id or --id-from-filename")
-    if not args.list:
+        p.error("give --lab-folder, --test-set/--test-set-id, --id or --id-from-filename")
+    if args.make_folders and not args.folder:
+        p.error("--make-folders needs --folder")
+    if not args.list and not args.make_folders:
         if not args.files and not args.folder:
             p.error("give image files or --folder")
         if args.watch and not args.folder:
@@ -477,8 +719,31 @@ def parse_args(argv=None):
     return args
 
 
+def describe_lab_folder(lab, image_root=None):
+    counts = {}
+    if image_root and os.path.isdir(image_root):
+        for item in lab.plan(image_root):
+            if item["instance"]:
+                counts[item["instance"]["id"]] = counts.get(item["instance"]["id"], 0) + 1
+    lines = ["{} test set(s), {} test case(s):".format(len(lab.sets), lab.instance_count)]
+    for ts in lab.sets:
+        lines.append("  [{}] {}".format(ts["id"], "\\".join(ts["path"])))
+        for i in ts["instances"]:
+            extra = "  ({} image(s))".format(counts.get(i["id"], 0)) if image_root else ""
+            lines.append("      {:>6}  {}{}".format(i["id"], i["label"], extra))
+    return "\n".join(lines)
+
+
 def build_resolver(client, args):
     id_regex = re.compile(args.id_regex)
+    if args.lab_folder:
+        lab = TestLabFolder(client, args.lab_folder)
+        print(describe_lab_folder(lab, args.folder))
+
+        def by_folder(path):
+            _ts, inst, err = lab.resolve(args.folder, path)
+            return [inst["id"]] if inst else err
+        return lab, by_folder
     if args.testlab:
         set_id = args.test_set_id or TestLab.find_test_set(client, args.test_set)
         lab = TestLab(client, set_id)
@@ -511,11 +776,14 @@ def main(argv=None):
     up = None
     try:
         try:
-            _lab, resolver = build_resolver(client, args)
-        except (AlmError, requests.RequestException) as e:
+            lab, resolver = build_resolver(client, args)
+            if args.make_folders:
+                made = lab.make_folders(args.folder)
+                print("Created {} test case folder(s) in {}".format(made, args.folder))
+        except (AlmError, requests.RequestException, OSError) as e:
             print("Error: {}".format(e))
             return 1
-        if args.list:
+        if args.list or args.make_folders:
             return 0
 
         up = Uploader(client, args, resolver)
