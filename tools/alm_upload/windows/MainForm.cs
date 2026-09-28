@@ -35,7 +35,9 @@ namespace AlmImageUploader
         Label lblWho3, lblSummary, lblPreview, lblCase;
         TextBox txtLabFolder, txtFolder, txtImgFilter, txtTestFilter, txtLog;
         CheckBox chkOnlyUnassigned, chkHideUploaded;
-        Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnRemoveFromCase, btnUpload, btnStop;
+        Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
+               btnUntick, btnSetField;
+        Label lblTicked;
         ListView lvImages;
         PictureBox picPreview;
         TreeView tree;
@@ -50,6 +52,8 @@ namespace AlmImageUploader
         TestLabFolder lab;
         string imageRoot;
         List<ImageItem> images = new List<ImageItem>();
+        readonly HashSet<TestInstance> ticked = new HashSet<TestInstance>();
+        bool syncingChecks;
 
         Thread worker;
         volatile bool stopRequested;
@@ -459,10 +463,12 @@ namespace AlmImageUploader
 
             btnAccept = B("Accept suggestion");
             btnUnassign = B("Remove assignment");
+            btnClearAssign = B("Clear all assignments");
             btnAccept.Click += (s, e) => AcceptSuggestions();
             btnUnassign.Click += (s, e) => UnassignSelected();
-            p.Controls.Add(Flow(btnAccept, btnUnassign,
-                new Label { Text = "Tip: Ctrl/Shift+click to pick many images, then drag them onto a test case.", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(6, 9, 3, 3) }), 0, 5);
+            btnClearAssign.Click += (s, e) => ClearAllAssignments();
+            p.Controls.Add(Flow(btnAccept, btnUnassign, btnClearAssign,
+                new Label { Text = "Tip: Ctrl/Shift+click or Ctrl+A to pick many images.", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(6, 9, 3, 3) }), 0, 5);
             return p;
         }
 
@@ -476,33 +482,35 @@ namespace AlmImageUploader
             txtTestFilter.TextChanged += (s, e) => RefreshTree();
             p.Controls.Add(Flow(new Label { Text = "Search:", AutoSize = true, Margin = new Padding(3, 7, 0, 3) }, txtTestFilter), 0, 1);
 
-            tree = new TreeView { Dock = DockStyle.Fill, HideSelection = false, AllowDrop = true };
+            tree = new TreeView { Dock = DockStyle.Fill, HideSelection = false, AllowDrop = true, CheckBoxes = true };
             tree.AfterSelect += (s, e) => OnCaseSelected();
-            tree.NodeMouseDoubleClick += (s, e) => { if (e.Node.Tag is TestInstance) AssignSelectedTo((TestInstance)e.Node.Tag); };
+            tree.AfterCheck += OnNodeChecked;
+            tree.NodeMouseDoubleClick += (s, e) => { if (e.Node.Tag is TestInstance) AssignSelectedTo(new List<TestInstance> { (TestInstance)e.Node.Tag }); };
             tree.DragOver += (s, e) =>
             {
                 var node = tree.GetNodeAt(tree.PointToClient(new Point(e.X, e.Y)));
-                e.Effect = node != null && node.Tag is TestInstance && e.Data.GetDataPresent(typeof(List<ImageItem>))
-                           ? DragDropEffects.Copy : DragDropEffects.None;
-                if (node != null && node.Tag is TestInstance) tree.SelectedNode = node;
+                e.Effect = node != null && e.Data.GetDataPresent(typeof(List<ImageItem>)) ? DragDropEffects.Copy : DragDropEffects.None;
+                if (node != null) tree.SelectedNode = node;
             };
             tree.DragDrop += (s, e) =>
             {
                 var node = tree.GetNodeAt(tree.PointToClient(new Point(e.X, e.Y)));
                 var dropped = e.Data.GetData(typeof(List<ImageItem>)) as List<ImageItem>;
-                if (node != null && node.Tag is TestInstance && dropped != null)
-                    Assign(dropped, (TestInstance)node.Tag);
+                if (node == null || dropped == null) return;
+                // onto a test set: every test case in it
+                var targets = node.Tag is TestSet ? ((TestSet)node.Tag).Instances.ToList() : new List<TestInstance> { (TestInstance)node.Tag };
+                Assign(dropped, targets);
             };
             p.Controls.Add(tree, 0, 2);
 
-            btnAssign = B("<  Assign selected images to this test case", true);
-            btnAssign.Click += (s, e) =>
-            {
-                var inst = tree.SelectedNode == null ? null : tree.SelectedNode.Tag as TestInstance;
-                if (inst == null) { Say("Select a test case (not a test set) on the right first."); return; }
-                AssignSelectedTo(inst);
-            };
-            p.Controls.Add(Flow(btnAssign), 0, 3);
+            btnAssign = B("<  Assign selected images to ticked test cases", true);
+            btnAssign.Click += (s, e) => AssignSelectedTo(Targets());
+            btnUntick = B("Untick all");
+            btnUntick.Click += (s, e) => { ticked.Clear(); RefreshTree(); UpdateTicked(); };
+            btnSetField = B("Set field (e.g. Comments)...");
+            btnSetField.Click += (s, e) => OpenSetField();
+            lblTicked = new Label { AutoSize = true, Margin = new Padding(6, 9, 3, 3), ForeColor = SystemColors.GrayText };
+            p.Controls.Add(Flow(btnAssign, btnUntick, btnSetField, lblTicked), 0, 3);
 
             lblCase = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 0), Text = "Images in the selected test case:" };
             p.Controls.Add(lblCase, 0, 4);
@@ -582,11 +590,13 @@ namespace AlmImageUploader
                     lab = l;
                     imageRoot = folder;
                     images = imgs;
+                    ticked.Clear();
                     if (fromFolders > 0) SaveAssignments();
                     EnableAssignUi(true);
                     RefreshImages();
                     RefreshTree();
                     UpdateSummary();
+                    UpdateTicked();
                 });
             }, err => Log("ERROR: " + err), () => Ui(() => SetBusy(false)));
         }
@@ -595,6 +605,7 @@ namespace AlmImageUploader
         {
             lab = null;
             images = new List<ImageItem>();
+            ticked.Clear();
             if (lvImages == null) return;
             lvImages.Items.Clear();
             tree.Nodes.Clear();
@@ -606,7 +617,7 @@ namespace AlmImageUploader
 
         void EnableAssignUi(bool on)
         {
-            foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnRemoveFromCase, btnUpload })
+            foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnSetField })
                 c.Enabled = on;
         }
 
@@ -710,13 +721,17 @@ namespace AlmImageUploader
                 if (cases.Count == 0) continue;
                 var sn = tree.Nodes.Add(NodeText(ts));
                 sn.Tag = ts;
+                syncingChecks = true;
                 foreach (var inst in cases)
                 {
                     var cn = sn.Nodes.Add(NodeText(inst));
                     cn.Tag = inst;
+                    cn.Checked = ticked.Contains(inst);
                     if (CountFor(inst) > 0) cn.ForeColor = Done;
                     if (inst == selected) select = cn;
                 }
+                sn.Checked = cases.All(ticked.Contains);
+                syncingChecks = false;
                 if (ts == selected) select = sn;
                 if (q != "" || expanded.Contains(ts)) sn.Expand();
             }
@@ -761,7 +776,9 @@ namespace AlmImageUploader
             }
             var img = sel[0];
             SetPreview(img.File);
-            lblPreview.Text = img.Rel + (img.Assigned.Count > 0 ? "   ->   " + string.Join(";  ", img.Assigned.Select(i => CaseText(lab, i))) : "");
+            lblPreview.Text = img.Rel + (img.Assigned.Count == 0 ? ""
+                : img.Assigned.Count <= 3 ? "   ->   " + string.Join(";  ", img.Assigned.Select(i => CaseText(lab, i)))
+                : "   ->   assigned to " + img.Assigned.Count + " test cases");
             var show = img.Assigned.Count > 0 ? img.Assigned[0] : img.Suggestion;
             if (show != null) SelectCase(show);
         }
@@ -811,20 +828,85 @@ namespace AlmImageUploader
         }
 
         // ------------------------------------------------------ assigning
-        void AssignSelectedTo(TestInstance inst)
+        /// Where "Assign" goes: the ticked test cases; else the selected test set (all its
+        /// test cases) or the selected test case.
+        List<TestInstance> Targets()
+        {
+            if (ticked.Count > 0)
+                return lab.Sets.SelectMany(s => s.Instances).Where(ticked.Contains).ToList();
+            var node = tree.SelectedNode;
+            if (node == null) return new List<TestInstance>();
+            if (node.Tag is TestSet) return ((TestSet)node.Tag).Instances.ToList();
+            return new List<TestInstance> { (TestInstance)node.Tag };
+        }
+
+        void AssignSelectedTo(List<TestInstance> targets)
         {
             var sel = SelectedImages();
             if (sel.Count == 0) { Say("Select one or more images on the left first."); return; }
-            Assign(sel, inst);
+            if (targets.Count == 0) { Say("Tick the test cases or test sets on the right first (or select one)."); return; }
+            if (targets.Count > 1 && !Confirm(string.Format("Assign {0} image(s) to each of {1} test cases?", sel.Count, targets.Count)))
+                return;
+            Assign(sel, targets);
         }
 
-        void Assign(List<ImageItem> imgs, TestInstance inst)
+        void Assign(List<ImageItem> imgs, List<TestInstance> targets)
         {
             if (Busy()) return;
-            foreach (var img in imgs.Where(i => !i.Assigned.Contains(inst)))
-                img.Assigned.Add(inst);
-            Log(string.Format("Assigned {0} image(s) to {1}", imgs.Count, CaseText(lab, inst)));
+            foreach (var inst in targets)
+                foreach (var img in imgs.Where(i => !i.Assigned.Contains(inst)))
+                    img.Assigned.Add(inst);
+            Log(targets.Count == 1
+                ? string.Format("Assigned {0} image(s) to {1}", imgs.Count, CaseText(lab, targets[0]))
+                : string.Format("Assigned {0} image(s) to each of {1} test cases", imgs.Count, targets.Count));
             AfterChange(imgs);
+        }
+
+        void ClearAllAssignments()
+        {
+            if (Busy()) return;
+            int n = images.Sum(i => i.Assigned.Count(a => !i.Uploaded.Contains(a.Id)));
+            if (n == 0) { Say("There are no assignments waiting for upload."); return; }
+            if (!Confirm(string.Format("Remove all {0} assignment(s) that are not uploaded yet?", n))) return;
+            foreach (var img in images) img.Assigned.RemoveAll(a => !img.Uploaded.Contains(a.Id));
+            Log(string.Format("Cleared {0} assignment(s).", n));
+            AfterChange(images);
+        }
+
+        void OnNodeChecked(object sender, TreeViewEventArgs e)
+        {
+            if (syncingChecks) return;
+            syncingChecks = true;
+            if (e.Node.Tag is TestSet)
+            {
+                foreach (TreeNode cn in e.Node.Nodes)
+                {
+                    cn.Checked = e.Node.Checked;
+                    if (e.Node.Checked) ticked.Add((TestInstance)cn.Tag); else ticked.Remove((TestInstance)cn.Tag);
+                }
+            }
+            else
+            {
+                if (e.Node.Checked) ticked.Add((TestInstance)e.Node.Tag); else ticked.Remove((TestInstance)e.Node.Tag);
+                e.Node.Parent.Checked = e.Node.Parent.Nodes.Cast<TreeNode>().All(n => n.Checked);
+            }
+            syncingChecks = false;
+            UpdateTicked();
+        }
+
+        void UpdateTicked()
+        {
+            lblTicked.Text = ticked.Count == 0 ? "tick test sets / test cases" : ticked.Count + " test case(s) ticked";
+            lblTicked.ForeColor = ticked.Count == 0 ? SystemColors.GrayText : Color.RoyalBlue;
+        }
+
+        void OpenSetField()
+        {
+            if (Busy() || lab == null) return;
+            var targets = Targets();
+            if (targets.Count == 0) { Say("Tick the test cases or test sets whose field you want to change first."); return; }
+            using (var dlg = new SetFieldDialog(client, lab, targets))
+                dlg.ShowDialog(this);
         }
 
         void AcceptSuggestions()
@@ -1038,6 +1120,202 @@ namespace AlmImageUploader
             EnableAssignUi(!busy && lab != null);
             btnStop.Enabled = busy;
             UseWaitCursor = busy;
+        }
+    }
+
+    /// Sets one field (e.g. the "Comments" selection list) to the same value on many test cases.
+    public class SetFieldDialog : Form
+    {
+        // structural fields that must not be changed from here
+        static readonly HashSet<string> Hidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "id", "cycle-id", "test-id", "test-order", "test-config-id", "ver-stamp", "last-modified", "subtype-id", "iterations" };
+
+        readonly AlmClient client;
+        readonly List<TestInstance> targets;
+        protected readonly ComboBox cboField, cboValue;
+        protected readonly Button btnApply, btnStop;
+        readonly Label lblNow, lblProgress;
+        readonly TextBox txtLog;
+        Thread worker;
+        volatile bool stop;
+        int loadSeq;
+
+        public SetFieldDialog(AlmClient client, TestLabFolder lab, List<TestInstance> targets)
+        {
+            this.client = client;
+            this.targets = targets;
+            Text = "Set field on test cases";
+            Font = new Font("Segoe UI", 9f);
+            ClientSize = new Size(620, 460);
+            StartPosition = FormStartPosition.CenterParent;
+            MinimizeBox = MaximizeBox = false;
+            ShowInTaskbar = false;
+
+            var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(10) };
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            int sets = targets.Select(i => i.SetId).Distinct().Count();
+            var head = new Label
+            {
+                AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 10),
+                Text = string.Format("{0} test case(s) in {1} test set(s)", targets.Count, sets),
+            };
+            t.Controls.Add(head, 0, 0);
+            t.SetColumnSpan(head, 2);
+            t.Controls.Add(new Label { Text = "Field", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 1);
+            cboField = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+            t.Controls.Add(cboField, 1, 1);
+            t.Controls.Add(new Label { Text = "New value", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 2);
+            cboValue = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Dock = DockStyle.Fill };
+            t.Controls.Add(cboValue, 1, 2);
+            lblNow = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 4, 3, 8), MaximumSize = new Size(480, 0) };
+            t.Controls.Add(lblNow, 1, 3);
+            var row = new FlowLayoutPanel { AutoSize = true };
+            btnApply = new Button { Text = "Apply to all " + targets.Count, AutoSize = true, Enabled = false };
+            btnApply.Font = new Font(btnApply.Font, FontStyle.Bold);
+            btnStop = new Button { Text = "Stop", AutoSize = true, Enabled = false };
+            var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+            btnApply.Click += (s, e) => Apply();
+            btnStop.Click += (s, e) => stop = true;
+            row.Controls.Add(btnApply);
+            row.Controls.Add(btnStop);
+            row.Controls.Add(close);
+            lblProgress = new Label { AutoSize = true, Margin = new Padding(8, 9, 3, 3) };
+            row.Controls.Add(lblProgress);
+            t.Controls.Add(row, 1, 4);
+            txtLog = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, BackColor = SystemColors.Window };
+            t.Controls.Add(txtLog, 0, 5);
+            t.SetColumnSpan(txtLog, 2);
+            t.RowCount = 6;
+            for (int i = 0; i < 5; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            Controls.Add(t);
+            CancelButton = close;
+
+            cboField.SelectedIndexChanged += (s, e) => OnFieldChanged();
+            cboValue.TextChanged += (s, e) => btnApply.Enabled = cboField.SelectedItem != null && !Busy();
+            FormClosing += (s, e) => { if (Busy()) { stop = true; e.Cancel = true; } };
+            Shown += (s, e) => LoadFields();
+        }
+
+        protected virtual bool Confirm(string q)
+        {
+            return MessageBox.Show(this, q, Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        }
+
+        bool Busy() { return worker != null && worker.IsAlive; }
+
+        void Ui(Action a)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired) BeginInvoke(a); else a();
+        }
+
+        void Log(string msg) { Ui(() => txtLog.AppendText(msg + Environment.NewLine)); }
+
+        void Run(Action work, Action after)
+        {
+            worker = new Thread(() =>
+            {
+                try { work(); }
+                catch (Exception e) { Log("ERROR: " + e.Message); }
+                finally { Ui(after); }
+            }) { IsBackground = true };
+            worker.Start();
+        }
+
+        void LoadFields()
+        {
+            lblNow.Text = "Loading fields from ALM...";
+            List<AlmClient.FieldDef> defs = null;
+            Run(() => defs = client.GetFieldDefs("test-instance"), () =>
+            {
+                if (defs == null) { lblNow.Text = "Could not read the fields."; return; }
+                var usable = defs.Where(f => f.Editable && f.Active && !Hidden.Contains(f.Name))
+                                 .OrderBy(f => f.System).ThenBy(f => f.Label, StringComparer.OrdinalIgnoreCase).ToList();
+                foreach (var f in usable) cboField.Items.Add(f);
+                lblNow.Text = usable.Count == 0 ? "No editable fields found." : "";
+                // the Comments column is the usual one
+                var pick = usable.FindIndex(f => f.Label.IndexOf("comment", StringComparison.OrdinalIgnoreCase) >= 0);
+                if (usable.Count > 0) cboField.SelectedIndex = pick >= 0 ? pick : 0;
+            });
+        }
+
+        void OnFieldChanged()
+        {
+            var f = cboField.SelectedItem as AlmClient.FieldDef;
+            cboValue.Items.Clear();
+            cboValue.Text = "";
+            btnApply.Enabled = false;
+            if (f == null) return;
+            cboValue.DropDownStyle = f.ListId != "" ? ComboBoxStyle.DropDownList : ComboBoxStyle.DropDown;
+            lblNow.Text = "Loading...";
+            int seq = ++loadSeq;
+            List<string> values = null;
+            Dictionary<string, int> now = null;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                string err = null;
+                try
+                {
+                    if (f.ListId != "") values = client.GetListValues(f.ListId);
+                    // what the ticked test cases have today
+                    now = client.GetByIds("test-instances", "id", targets.Select(i => i.Id), new[] { "id", f.Name })
+                                .GroupBy(d => { string v; return d.TryGetValue(f.Name, out v) && v != "" ? v : "(empty)"; })
+                                .ToDictionary(g => g.Key, g => g.Count());
+                }
+                catch (Exception e) { err = e.Message; }
+                Ui(() =>
+                {
+                    if (seq != loadSeq) return;   // another field was chosen meanwhile
+                    if (values != null) foreach (var v in values) cboValue.Items.Add(v);
+                    lblNow.Text = err != null ? "Could not read current values: " + err
+                        : "Now: " + string.Join(",   ", now.OrderByDescending(kv => kv.Value).Select(kv => kv.Key + " (" + kv.Value + ")"));
+                    if (f.ListId != "" && values != null && values.Count == 0) lblNow.Text += "\nThis selection list is empty.";
+                    btnApply.Enabled = !Busy() && (f.ListId == "" || cboValue.Items.Count > 0);
+                });
+            });
+        }
+
+        protected void Apply()
+        {
+            var f = cboField.SelectedItem as AlmClient.FieldDef;
+            if (f == null || Busy()) return;
+            var value = cboValue.Text;
+            if (f.ListId != "" && value == "") return;
+            if (!Confirm(string.Format("Set '{0}' to '{1}' on {2} test case(s)?", f.Label, value == "" ? "(empty)" : value, targets.Count)))
+                return;
+            stop = false;
+            btnApply.Enabled = cboField.Enabled = cboValue.Enabled = false;
+            btnStop.Enabled = true;
+            int ok = 0, failed = 0;
+            Run(() =>
+            {
+                var change = new Dictionary<string, string> { { f.Name, value } };
+                foreach (var inst in targets)
+                {
+                    if (stop) { Log("Stopped."); break; }
+                    try
+                    {
+                        client.UpdateEntity("test-instances", inst.Id, change);
+                        ok++;
+                    }
+                    catch (Exception e)
+                    {
+                        if (!(e is AlmException || e is WebException)) throw;
+                        failed++;
+                        Log("[FAIL] " + inst.Label + " (" + inst.Id + "): " + e.Message);
+                    }
+                    int done = ok + failed;
+                    Ui(() => lblProgress.Text = done + " / " + targets.Count);
+                }
+                Log(string.Format("Done: '{0}' = '{1}' on {2} test case(s), {3} failed.", f.Label, value, ok, failed));
+            }, () =>
+            {
+                btnStop.Enabled = false;
+                cboField.Enabled = cboValue.Enabled = true;
+                OnFieldChanged();   // show the new current values
+            });
         }
     }
 

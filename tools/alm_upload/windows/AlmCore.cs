@@ -334,6 +334,66 @@ namespace AlmImageUploader
             return sb.ToString();
         }
 
+        // ------------------------------------------------------ field values
+        public class FieldDef
+        {
+            public string Name, Label, Type, ListId;
+            public bool Editable, Active, System, Required;
+            public override string ToString() { return Label + "   (" + Name + ")"; }
+        }
+
+        /// Field definitions of an entity, e.g. "test-instance" (Label is what ALM shows as the column name).
+        public List<FieldDef> GetFieldDefs(string entity)
+        {
+            var r = Send("GET", Rest("customization/entities/" + entity + "/fields"), null, null, null, true);
+            Check(r, "read the fields of " + entity);
+            var doc = new XmlDocument();
+            doc.LoadXml(r.Body);
+            Func<XmlElement, string, string> child = (e, tag) =>
+            {
+                foreach (XmlNode n in e.ChildNodes)
+                    if (n is XmlElement && string.Equals(n.Name, tag, StringComparison.OrdinalIgnoreCase)) return n.InnerText.Trim();
+                return "";
+            };
+            return doc.GetElementsByTagName("Field").Cast<XmlElement>().Select(e => new FieldDef
+            {
+                Name = e.GetAttribute("Name"),
+                Label = e.GetAttribute("Label") != "" ? e.GetAttribute("Label") : e.GetAttribute("Name"),
+                Type = child(e, "Type"),
+                ListId = child(e, "List-Id"),
+                Editable = child(e, "Editable") != "false",
+                Active = child(e, "Active") != "false",
+                System = child(e, "System") == "true",
+                Required = child(e, "Required") == "true",
+            }).Where(f => f.Name != "").ToList();
+        }
+
+        /// The values of an ALM selection list (all levels, in list order).
+        public List<string> GetListValues(string listId)
+        {
+            var r = Send("GET", Rest("customization/used-lists") + "?id=" + Uri.EscapeDataString(listId), null, null, null, true);
+            if (r.Status == 404)
+                r = Send("GET", Rest("customization/lists") + "?id=" + Uri.EscapeDataString(listId), null, null, null, true);
+            Check(r, "read selection list " + listId);
+            var doc = new XmlDocument();
+            doc.LoadXml(r.Body);
+            return doc.GetElementsByTagName("Item").Cast<XmlElement>()
+                      .Select(e => e.GetAttribute("value") != "" ? e.GetAttribute("value") : e.GetAttribute("Value"))
+                      .Where(v => v != "").Distinct().ToList();
+        }
+
+        /// Change field values of one entity, e.g. UpdateEntity("test-instances", "885", {"user-01": "NA"}).
+        public void UpdateEntity(string collection, string id, Dictionary<string, string> values)
+        {
+            var type = collection.EndsWith("s") ? collection.Substring(0, collection.Length - 1) : collection;
+            var xml = new StringBuilder("<Entity Type=\"" + type + "\"><Fields>");
+            foreach (var kv in values)
+                xml.Append("<Field Name=\"" + SecurityElementEscape(kv.Key) + "\"><Value>" + SecurityElementEscape(kv.Value) + "</Value></Field>");
+            xml.Append("</Fields></Entity>");
+            var r = Send("PUT", Rest(collection) + "/" + id, Encoding.UTF8.GetBytes(xml.ToString()), "application/xml", null, true);
+            Check(r, "update " + type + " " + id);
+        }
+
         public static string QueryValue(string name)
         {
             // ALM queries cannot escape quotes: use a wildcard and filter exactly afterwards

@@ -21,7 +21,12 @@ nothing to install and no Python. It works step by step:
    - pick images (Ctrl/Shift+click) and a test case, then **Assign** (or drag the
      images onto the test case, or double-click it); one image can go to several
      test cases; **Accept suggestion** takes the suggested test case
+   - tick test sets / test cases (ticking a test set ticks all its test cases) to
+     assign the selected images to every ticked test case at once; **Untick all**
+     and **Clear all assignments** start over
    - **Upload assigned images** uploads everything not uploaded yet
+   - **Set field...** changes one field (e.g. the *Comments* selection list to *NA*)
+     on all ticked test cases; the values come from the field's ALM list
    The assignments and what was uploaded are saved in `ALM-assignments.txt` in the
    image folder, so the work can continue later without uploading twice. Images that
    already sit in `<test set>\<test case>` folders are assigned automatically.
