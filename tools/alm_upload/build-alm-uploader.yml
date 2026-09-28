@@ -1,0 +1,51 @@
+name: Build ALM Image Uploader (Windows)
+
+on:
+  push:
+    paths:
+      - 'tools/alm_upload/**'
+      - '.github/workflows/build-alm-uploader.yml'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Portable Windows .exe
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: tools/alm_upload
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: pip install pyinstaller requests truststore
+
+      - name: Check the modules load
+        run: python -c "import alm_upload, alm_upload_gui; print('import ok')"
+
+      - name: Build GUI program (one portable .exe)
+        run: pyinstaller --noconfirm --onefile --windowed --name ALM-Image-Uploader --hidden-import truststore alm_upload_gui.py
+
+      - name: Build command-line tool (optional, for scripts)
+        run: pyinstaller --noconfirm --onefile --console --name alm_upload alm_upload.py
+
+      - name: Smoke test command-line exe
+        run: .\dist\alm_upload.exe --help
+
+      - name: Collect files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item dist\ALM-Image-Uploader.exe, dist\alm_upload.exe, README.md package\
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ALM-Image-Uploader-windows
+          path: tools/alm_upload/package/
+          retention-days: 90

@@ -107,7 +107,10 @@ other entities (`--entity defects --id 123 a.png`). See `alm_upload.exe --help`.
 ## Building the .exe yourself
 
 The GitHub Actions workflow `.github/workflows/build-alm-uploader.yml` builds it
-on every change under `tools/alm_upload/`. To build it on a Windows PC that has Python:
+on every change under `tools/alm_upload/`. If that workflow is not in the
+repository yet, create it on GitHub (**Add file → Create new file**, path
+`.github/workflows/build-alm-uploader.yml`) and paste the content of
+`tools/alm_upload/build-alm-uploader.yml`. To build it on a Windows PC that has Python:
 
 ```bat
 pip install pyinstaller requests truststore
