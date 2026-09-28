@@ -104,6 +104,18 @@ alm_upload.exe --lab-folder "Root\Release 1\Sprint 12" --folder C:\Images --watc
 Other modes: one test set (`--test-set "Name"` or `--test-set-id 101`) and
 other entities (`--entity defects --id 123 a.png`). See `alm_upload.exe --help`.
 
+## Portable zip (no GitHub needed)
+
+`portable/build_portable.py` builds `ALM-Image-Uploader-portable.zip` on any
+OS (Linux too). It bundles Windows Python 3.12 with Tk from conda-forge, the
+program and a double-click launcher (`ALM Image Uploader.bat`). Unzip it on the
+Windows PC and run the `.bat` file. Nothing gets installed.
+
+```bash
+pip install zstandard
+python portable/build_portable.py --out dist
+```
+
 ## Building the .exe yourself
 
 The GitHub Actions workflow `.github/workflows/build-alm-uploader.yml` builds it
