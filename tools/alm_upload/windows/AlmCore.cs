@@ -446,7 +446,7 @@ namespace AlmImageUploader
     // -------------------------------------------------------------------- helpers
     public static class Util
     {
-        public static readonly string[] ImageExts = { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp" };
+        public static readonly string[] ImageExts = { ".png", ".jpg", ".jpeg", ".jfif", ".gif", ".bmp", ".tif", ".tiff", ".webp" };
 
         public static bool IsImage(string path)
         {
@@ -827,12 +827,27 @@ namespace AlmImageUploader
         }
     }
 
-    /// Suggests a test case for an image from word/number overlap between the file name
-    /// and "<test set> <test case>" (e.g. "1.1 Username Not Found.png" ~ "3.1_User_NotFound").
-    /// Only a clear winner is suggested; the user confirms it.
+    /// Suggests a test case for an image from its file name, by word / number overlap with
+    /// "<test set> <test case>": exact words count most, then word starts (land ~ landing),
+    /// small typos and common abbreviations (pw ~ password). A clear winner is a strong
+    /// suggestion; a close call is a weak one ("maybe"). The user always confirms.
     public class Suggester
     {
         readonly List<KeyValuePair<TestInstance, List<string>>> candidates = new List<KeyValuePair<TestInstance, List<string>>>();
+
+        static readonly Dictionary<string, string> Abbrev = new Dictionary<string, string>
+        {
+            { "pw", "password" }, { "pwd", "password" }, { "pass", "password" }, { "msg", "message" },
+            { "acc", "account" }, { "acct", "account" }, { "btn", "button" }, { "err", "error" },
+            { "num", "number" }, { "no", "number" }, { "info", "information" }, { "txn", "transaction" },
+            { "trx", "transaction" }, { "auth", "authentication" }, { "addr", "address" }, { "amt", "amount" },
+            { "img", "image" }, { "pic", "picture" }, { "ver", "version" }, { "upd", "update" },
+            { "dl", "download" }, { "maint", "maintenance" }, { "reg", "register" }, { "noti", "notification" },
+            { "notif", "notification" }, { "pwd2", "password" }, { "sec", "security" }, { "qn", "question" },
+        };
+
+        static readonly HashSet<string> Ignore = new HashSet<string>
+            { "the", "and", "of", "to", "an", "in", "on", "for", "with", "copy", "png", "jpg" };
 
         public Suggester(TestLabFolder lab)
         {
@@ -845,39 +860,83 @@ namespace AlmImageUploader
         {
             s = Regex.Replace(s ?? "", "([a-z])([A-Z])", "$1 $2");          // NotFound -> Not Found
             return Regex.Matches(s.ToLowerInvariant(), @"\d+(?:\.\d+)*|[a-z]+")
-                        .Cast<Match>().Select(m => m.Value).Distinct().ToList();
+                        .Cast<Match>().Select(m => m.Value).Where(t => !Ignore.Contains(t)).Distinct().ToList();
         }
 
-        static bool Same(string a, string b)
+        static int Distance(string a, string b)
         {
-            if (a == b) return true;
-            if (char.IsDigit(a[0]) || char.IsDigit(b[0]) || a.Length < 3 || b.Length < 3) return false;
-            return a.StartsWith(b) || b.StartsWith(a);                        // land ~ landing, user ~ username
+            var d = new int[b.Length + 1];
+            for (int j = 0; j <= b.Length; j++) d[j] = j;
+            for (int i = 1; i <= a.Length; i++)
+            {
+                int prev = d[0];
+                d[0] = i;
+                for (int j = 1; j <= b.Length; j++)
+                {
+                    int tmp = d[j];
+                    d[j] = Math.Min(Math.Min(d[j] + 1, d[j - 1] + 1), prev + (a[i - 1] == b[j - 1] ? 0 : 1));
+                    prev = tmp;
+                }
+            }
+            return d[b.Length];
         }
 
-        public TestInstance Suggest(string fileName)
+        static bool IsSubsequence(string small, string big)
         {
+            int k = 0;
+            foreach (char ch in big) if (k < small.Length && ch == small[k]) k++;
+            return k == small.Length;
+        }
+
+        /// How well one file-name token matches one test token (0 = not at all).
+        static double Match(string t, string c)
+        {
+            if (t == c) return char.IsDigit(t[0]) ? 1 : 2;
+            if (char.IsDigit(t[0]) || char.IsDigit(c[0])) return 0;
+            string full;
+            if (Abbrev.TryGetValue(t, out full) && (c == full || c.StartsWith(full))) return 1.8;
+            if (t.Length >= 3 && c.Length >= 3 && (t.StartsWith(c) || c.StartsWith(t))) return 1.5;   // land ~ landing
+            int max = Math.Max(t.Length, c.Length);
+            if (max >= 5 && Distance(t, c) <= (max >= 8 ? 2 : 1)) return 1.2;                     // small typo
+            if (t.Length >= 2 && t.Length <= 3 && c.Length > t.Length && c[0] == t[0] && IsSubsequence(t, c))
+                return 1;                                                                            // pw ~ password
+            return 0;
+        }
+
+        public TestInstance Suggest(string fileName, out bool weak)
+        {
+            weak = false;
             var img = Tokens(Path.GetFileNameWithoutExtension(fileName));
+            // single letters written apart ("1.1 D,X") may be one code ("StatusDX")
+            var letters = new List<string>();
+            foreach (var t in img.Concat(new[] { "0" }))
+            {
+                if (t.Length == 1 && char.IsLetter(t[0])) { letters.Add(t); continue; }
+                if (letters.Count > 1 && !img.Contains(string.Concat(letters))) img.Add(string.Concat(letters));
+                letters.Clear();
+            }
             if (!img.Any(t => !char.IsDigit(t[0]))) return null;
-            double best = 0, second = 0;
-            TestInstance winner = null;
+            var scored = new List<KeyValuePair<TestInstance, double>>();
             foreach (var c in candidates)
             {
                 double score = 0;
                 bool word = false;
                 foreach (var t in img)
                 {
-                    if (!c.Value.Any(x => Same(t, x))) continue;
-                    bool isWord = !char.IsDigit(t[0]);
-                    score += isWord ? 2 : 1;
-                    word |= isWord;
+                    double m = c.Value.Select(x => Match(t, x)).DefaultIfEmpty(0).Max();
+                    score += m;
+                    if (m > 0 && !char.IsDigit(t[0])) word = true;
                 }
                 if (!word) continue;
-                score -= 0.01 * c.Value.Count;                                // prefer the closer, shorter name
-                if (score > best) { second = best; best = score; winner = c.Key; }
-                else if (score > second) second = score;
+                scored.Add(new KeyValuePair<TestInstance, double>(c.Key, score - 0.01 * c.Value.Count));   // prefer shorter names
             }
-            return best - second >= 0.5 ? winner : null;
+            if (scored.Count == 0) return null;
+            scored.Sort((x, y) => y.Value != x.Value ? y.Value.CompareTo(x.Value)
+                                                     : Util.NaturalCompare(x.Key.Label, y.Key.Label));
+            double best = scored[0].Value, second = scored.Count > 1 ? scored[1].Value : 0;
+            if (best < 0.95) return null;
+            weak = best < 1.9 || best - second < 0.3;
+            return scored[0].Key;
         }
     }
 
@@ -887,9 +946,60 @@ namespace AlmImageUploader
         public string File, Rel;
         public readonly List<TestInstance> Assigned = new List<TestInstance>();
         public readonly HashSet<string> Uploaded = new HashSet<string>();   // test instance ids
-        public TestInstance Suggestion;
 
+        /// Suggested test cases (not assigned yet) and why.
+        public readonly List<TestInstance> Suggested = new List<TestInstance>();
+        public bool SuggestWeak;
+        public string SuggestLike;           // "1.3 Login-4.png" when it comes from a similar image
+
+        // suggestion from the file name alone, worked out once on load
+        public TestInstance NameSuggestion;
+        public bool NameSuggestionWeak;
+
+        public TestInstance Suggestion { get { return Suggested.Count > 0 ? Suggested[0] : null; } }
         public bool FullyUploaded { get { return Assigned.Count > 0 && Assigned.All(i => Uploaded.Contains(i.Id)); } }
+
+        /// "1.3 Login-5.png" -> "1.3 login": images that differ only by a trailing number.
+        public static string SiblingKey(string rel)
+        {
+            var dir = Path.GetDirectoryName(rel) ?? "";
+            var stem = Path.GetFileNameWithoutExtension(rel);
+            var core = Regex.Replace(stem, @"(?:[\s_\-]*\(?\d{1,3}\)?)+$", "");
+            core = Util.Norm(core);
+            if (!Regex.IsMatch(core, "[a-z]")) return null;   // "1.1.png" / "1.2.png" are not siblings
+            return Util.Norm(dir) + "|" + core;
+        }
+
+        /// Recomputes suggestions: an image whose "sibling" (same name apart from a trailing
+        /// number) is assigned gets the same test cases; otherwise the file-name suggestion.
+        public static void RefreshSuggestions(List<ImageItem> images)
+        {
+            var bySibling = new Dictionary<string, ImageItem>();
+            foreach (var img in images.Where(i => i.Assigned.Count > 0))
+            {
+                var key = SiblingKey(img.Rel);
+                if (key != null && !bySibling.ContainsKey(key)) bySibling[key] = img;
+            }
+            foreach (var img in images)
+            {
+                img.Suggested.Clear();
+                img.SuggestLike = null;
+                img.SuggestWeak = false;
+                if (img.Assigned.Count > 0) continue;
+                var key = SiblingKey(img.Rel);
+                ImageItem sib;
+                if (key != null && bySibling.TryGetValue(key, out sib))
+                {
+                    img.Suggested.AddRange(sib.Assigned);
+                    img.SuggestLike = Path.GetFileName(sib.Rel);
+                }
+                else if (img.NameSuggestion != null)
+                {
+                    img.Suggested.Add(img.NameSuggestion);
+                    img.SuggestWeak = img.NameSuggestionWeak;
+                }
+            }
+        }
     }
 
     /// Remembers which image goes to which test case (and what is uploaded) in a text file

@@ -17,7 +17,8 @@ namespace AlmImageUploader
     {
         const string AppName = "ALM Image Uploader";
         const string SettingsFile = "ALMImageUploader.ini";
-        static readonly Color Done = Color.ForestGreen, Hint = Color.SteelBlue, Warn = Color.DarkOrange, NaColor = Color.SlateGray;
+        static readonly Color Done = Color.ForestGreen, Hint = Color.SteelBlue, HintWeak = Color.MediumPurple,
+                              Warn = Color.DarkOrange, NaColor = Color.SlateGray;
 
         // step 1
         Panel pageLogin;
@@ -40,7 +41,7 @@ namespace AlmImageUploader
         AlmClient.FieldDef commentField;   // the "Comments" column, shown as [NA] etc. in the tree
         Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
                btnUntick, btnTickAll, btnSetField, btnDownload, btnSelectAll, btnDeselectAll;
-        Label lblTicked;
+        Label lblTicked, lblImagesTitle;
         ListView lvImages;
         PictureBox picPreview;
         TreeView tree;
@@ -432,7 +433,8 @@ namespace AlmImageUploader
             var p = Rows(SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize);
             p.RowStyles[2] = new RowStyle(SizeType.Percent, 58);
             p.RowStyles[4] = new RowStyle(SizeType.Percent, 42);
-            p.Controls.Add(new Label { Text = "Images", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 0) }, 0, 0);
+            lblImagesTitle = new Label { Text = "Images", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 0) };
+            p.Controls.Add(lblImagesTitle, 0, 0);
 
             txtImgFilter = new TextBox { Width = 105, Margin = new Padding(3, 4, 3, 3) };
             cboImgFilter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150, Margin = new Padding(3, 4, 3, 3) };
@@ -617,10 +619,17 @@ namespace AlmImageUploader
                     if (r.Instance != null) { img.Assigned.Add(r.Instance); fromFolders++; }
                 }
                 var sug = new Suggester(l);
-                foreach (var img in imgs.Where(i => i.Assigned.Count == 0))
-                    img.Suggestion = sug.Suggest(img.Rel);
-                Log(string.Format("Found {0} image(s): {1} already assigned, {2} with a suggestion.",
-                    imgs.Count, imgs.Count(i => i.Assigned.Count > 0), imgs.Count(i => i.Suggestion != null)));
+                foreach (var img in imgs)
+                {
+                    bool weak;
+                    img.NameSuggestion = sug.Suggest(img.Rel, out weak);
+                    img.NameSuggestionWeak = weak;
+                }
+                ImageItem.RefreshSuggestions(imgs);
+                Log(string.Format("Found {0} image(s): {1} already assigned, {2} suggested, {3} maybe, {4} without a suggestion.",
+                    imgs.Count, imgs.Count(i => i.Assigned.Count > 0),
+                    imgs.Count(i => i.Suggestion != null && !i.SuggestWeak), imgs.Count(i => i.Suggestion != null && i.SuggestWeak),
+                    imgs.Count(i => i.Assigned.Count == 0 && i.Suggestion == null)));
                 if (fromFolders > 0) Log(fromFolders + " image(s) assigned from their <test set>\\<test case> folder.");
                 Ui(() =>
                 {
@@ -630,6 +639,11 @@ namespace AlmImageUploader
                     ticked.Clear();
                     commentField = cf;
                     FillTreeFilter();
+                    // a new load always starts with every image and test case visible
+                    txtImgFilter.Text = "";
+                    cboImgFilter.SelectedIndex = 0;
+                    txtTestFilter.Text = "";
+                    cboTreeFilter.SelectedIndex = 0;
                     if (fromFolders > 0) SaveAssignments();
                     EnableAssignUi(true);
                     RefreshImages();
@@ -687,9 +701,13 @@ namespace AlmImageUploader
             }
             else if (img.Suggestion != null)
             {
-                target = "suggest:  " + CaseText(lab, img.Suggestion);
-                status = "";
-                color = Hint;
+                var cases = string.Join(";  ", img.Suggested.Select(i => CaseText(lab, i)));
+                if (img.SuggestLike != null)
+                    target = "suggest (like " + img.SuggestLike + "):  " + cases;
+                else
+                    target = (img.SuggestWeak ? "maybe:  " : "suggest:  ") + cases;
+                status = img.SuggestWeak ? "maybe" : "suggested";
+                color = img.SuggestWeak ? HintWeak : Hint;
             }
             else
             {
@@ -730,6 +748,8 @@ namespace AlmImageUploader
                 return imgSortDesc ? -c : c;
             });
             lvImages.Items.AddRange(rows.ToArray());
+            lblImagesTitle.Text = rows.Count == images.Count ? string.Format("Images ({0})", images.Count)
+                                                             : string.Format("Images  (showing {0} of {1})", rows.Count, images.Count);
             foreach (var it in rows) if (selected.Contains((ImageItem)it.Tag)) it.Selected = true;
             string[] titles = { "Image", "Test case (assigned / suggested)", "Status" };
             for (int c = 0; c < titles.Length; c++)
@@ -953,15 +973,7 @@ namespace AlmImageUploader
             lblPreview.Text = img.Rel + (img.Assigned.Count == 0 ? ""
                 : img.Assigned.Count <= 3 ? "   ->   " + string.Join(";  ", img.Assigned.Select(i => CaseText(lab, i)))
                 : "   ->   assigned to " + img.Assigned.Count + " test cases");
-            var show = img.Assigned.Count > 0 ? img.Assigned[0] : img.Suggestion;
-            if (show != null) SelectCase(show);
-        }
-
-        void SelectCase(TestInstance inst)
-        {
-            foreach (TreeNode sn in tree.Nodes)
-                foreach (TreeNode cn in sn.Nodes)
-                    if (cn.Tag == inst) { tree.SelectedNode = cn; cn.EnsureVisible(); return; }
+            // the tree selection is left alone: it may be the target the user picked for "Assign"
         }
 
         void SetPreview(string file)
@@ -1137,8 +1149,8 @@ namespace AlmImageUploader
         {
             if (Busy()) return;
             var sel = SelectedImages().Where(i => i.Assigned.Count == 0 && i.Suggestion != null).ToList();
-            if (sel.Count == 0) { Say("Select images that show a 'suggest:' test case first."); return; }
-            foreach (var img in sel) img.Assigned.Add(img.Suggestion);
+            if (sel.Count == 0) { Say("Select images that show a 'suggest' or 'maybe' test case first."); return; }
+            foreach (var img in sel) img.Assigned.AddRange(img.Suggested);
             Log(string.Format("Accepted the suggestion for {0} image(s).", sel.Count));
             AfterChange(sel);
         }
@@ -1170,7 +1182,8 @@ namespace AlmImageUploader
         void AfterChange(IEnumerable<ImageItem> changed)
         {
             SaveAssignments();
-            if (cboImgFilter.SelectedIndex != 0) RefreshImages(); else RefreshImageRows(changed);
+            ImageItem.RefreshSuggestions(images);   // e.g. "1.3 Login-5" follows "1.3 Login-4"
+            if (cboImgFilter.SelectedIndex != 0) RefreshImages(); else RefreshImageRows(images);
             RefreshTreeCounts();
             OnCaseSelected();
             UpdateSummary();

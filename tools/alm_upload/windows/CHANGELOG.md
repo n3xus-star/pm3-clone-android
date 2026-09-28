@@ -1,5 +1,18 @@
 # ALM Image Uploader - changelog
 
+## 2.2.0
+- Load always starts with every image and test case visible (Search / Show are reset), and
+  the image list title shows "Images (271)" or "Images (showing 12 of 271)".
+- Suggestions:
+  - similar images follow each other: once "1.3 Login-4.png" is assigned, "1.3 Login-5.png",
+    "-6", ... suggest the same test case(s) ("suggest (like 1.3 Login-4.png)");
+  - more name matches: word starts (land ~ landing), small typos, abbreviations (pw ~ password);
+  - close calls are shown as "maybe" (purple) instead of being left out;
+  - the Status column says "suggested" / "maybe".
+- .jfif images are included.
+- Clicking an image no longer moves the selection in the test tree (it could change where
+  "Assign" puts the images when nothing is ticked).
+
 ## 2.1.0
 - "Tick all" next to "Untick all": ticks every test case the tree shows (respects Search / Show).
 - Images: "Select all" and "Deselect all" (respect Search / Show); Ctrl+A still selects all.

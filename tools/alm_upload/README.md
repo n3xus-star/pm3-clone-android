@@ -8,7 +8,7 @@ No Python and no installation needed: one `.exe` file.
 
 ## Windows program (single .exe, recommended)
 
-Current version: **2.1.0** (see `windows/CHANGELOG.md`).
+Current version: **2.2.0** (see `windows/CHANGELOG.md`).
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
