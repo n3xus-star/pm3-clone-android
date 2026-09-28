@@ -5,3 +5,4 @@ package/
 *.spec
 alm_uploader_settings.json
 windows/*.exe
+.refs/
