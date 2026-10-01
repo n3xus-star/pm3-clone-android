@@ -1,5 +1,17 @@
 # ALM Image Uploader - changelog
 
+## 2.5.0
+- Export results now includes the attachments of every test case (ticked by default):
+  - Excel: saved in the folder "<file name> - attachments\<test set>\<test case>\" next to
+    the Excel file; new columns "Attachments" (count) and "Attachment files";
+  - PDF: the pictures appear under each test case (other files are listed by name).
+- Import results: "Upload attachments" is now ticked by default and uploads the files from
+  that folder to the matched test cases (another department's folder or project too);
+  without the folder it copies them from the exported test cases in ALM. Files with the
+  same name already on the test case are skipped.
+- Fix: test cases with many attachments - all pages of ALM's attachment list are read
+  (before, only the first page was used when downloading, copying and checking duplicates).
+
 ## 2.4.0
 - Import results can also duplicate attachments: "Copy attachments from the exported test
   cases" copies the attachments of each test case in the Excel file (its Test Case ID) to the

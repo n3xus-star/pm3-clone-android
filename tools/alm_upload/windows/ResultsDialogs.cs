@@ -78,8 +78,9 @@ namespace AlmImageUploader
         readonly List<TestInstance> all, ticked;
         readonly string labText;
         protected readonly RadioButton rbAll, rbTicked, rbExcel, rbPdf;
+        protected readonly CheckBox chkAttach, chkImagesOnly;
         protected readonly TextBox txtFile;
-        readonly Button btnExport, btnOpen;
+        readonly Button btnExport, btnOpen, btnStop;
         readonly Label lblStatus;
 
         public string LastFile { get; private set; }
@@ -92,7 +93,7 @@ namespace AlmImageUploader
             this.labText = labText;
             all = lab.Sets.SelectMany(s => s.Instances).ToList();
             Text = "Export test results";
-            ClientSize = new Size(700, 440);
+            ClientSize = new Size(720, 500);
 
             var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(10) };
             t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -123,26 +124,46 @@ namespace AlmImageUploader
             var browse = Btn("Browse...");
             browse.Click += (s, e) => Browse();
             t.Controls.Add(browse, 2, 3);
+            t.Controls.Add(new Label { Text = "Attachments", AutoSize = true, Margin = new Padding(3, 6, 3, 3) }, 0, 4);
+            chkAttach = new CheckBox { AutoSize = true, Checked = true, Text = "Include the attachments of each test case" };
+            chkImagesOnly = new CheckBox { AutoSize = true, Text = "images only" };
+            var attachHint = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 0, 3, 6), MaximumSize = new Size(560, 0) };
+            Action hint = () => attachHint.Text = !chkAttach.Checked ? ""
+                : rbExcel.Checked ? "Saved in the folder  \"" + Path.GetFileName(Results.AttachmentFolder(txtFile.Text.Trim() == "" ? "x" : txtFile.Text.Trim()))
+                                    + "\"  next to the Excel file. Import uploads them to the matched test cases."
+                : "The pictures are shown under each test case in the PDF; other files are listed by name.";
+            chkAttach.CheckedChanged += (s, e) => { chkImagesOnly.Enabled = chkAttach.Checked; hint(); };
+            rbExcel.CheckedChanged += (s, e) => hint();
+            txtFile.TextChanged += (s, e) => hint();
+            var attach = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0) };
+            attach.Controls.AddRange(new Control[] { chkAttach, chkImagesOnly });
+            var attachBox = Stack(attach, attachHint);
+            t.Controls.Add(attachBox, 1, 4);
+            t.SetColumnSpan(attachBox, 2);
+            hint();
             rbExcel.CheckedChanged += (s, e) => txtFile.Text = Path.ChangeExtension(txtFile.Text, rbExcel.Checked ? ".xlsx" : ".pdf");
 
             var row = new FlowLayoutPanel { AutoSize = true };
             btnExport = Btn("Export", true);
+            btnStop = Btn("Stop");
+            btnStop.Enabled = false;
             btnOpen = Btn("Open file");
             btnOpen.Enabled = false;
             var close = Btn("Close");
             close.DialogResult = DialogResult.Cancel;
             btnExport.Click += (s, e) => DoExport();
+            btnStop.Click += (s, e) => stop = true;
             btnOpen.Click += (s, e) => { if (LastFile != null && File.Exists(LastFile)) System.Diagnostics.Process.Start(LastFile); };
-            row.Controls.AddRange(new Control[] { btnExport, btnOpen, close });
+            row.Controls.AddRange(new Control[] { btnExport, btnStop, btnOpen, close });
             lblStatus = new Label { AutoSize = true, Margin = new Padding(8, 9, 3, 3) };
             row.Controls.Add(lblStatus);
-            t.Controls.Add(row, 1, 4);
+            t.Controls.Add(row, 1, 5);
             t.SetColumnSpan(row, 2);
             txtLog = LogBox();
-            t.Controls.Add(txtLog, 0, 5);
+            t.Controls.Add(txtLog, 0, 6);
             t.SetColumnSpan(txtLog, 3);
-            t.RowCount = 6;
-            for (int i = 0; i < 5; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.RowCount = 7;
+            for (int i = 0; i < 6; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             Controls.Add(t);
             CancelButton = close;
@@ -176,21 +197,35 @@ namespace AlmImageUploader
             if (Busy) return;
             var file = txtFile.Text.Trim();
             if (file == "") return;
-            bool excel = rbExcel.Checked;
+            bool excel = rbExcel.Checked, attach = chkAttach.Checked, imagesOnly = chkImagesOnly.Checked;
             var targets = rbTicked.Checked ? ticked : all;
             btnExport.Enabled = btnOpen.Enabled = false;
+            btnStop.Enabled = true;
             lblStatus.Text = "Reading results from ALM...";
+            LastFile = null;
             Run(() =>
             {
                 var f = ResultFields.Read(client);
                 var rows = Results.Fetch(client, lab, targets, f);
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(file)));
                 var title = "Test results - " + labText;
+                PdfDoc pdf = excel ? null : new PdfDoc();
+                if (attach)
+                {
+                    var folder = excel ? Results.AttachmentFolder(file) : null;
+                    Results.FetchAttachments(client, rows, folder, pdf, imagesOnly, () => stop,
+                        (k, n) => Ui(() => lblStatus.Text = string.Format("Attachments: test case {0} / {1}   -   {2} file(s)", k, rows.Count, n)), Log);
+                    if (stop) { Log("Stopped - nothing was saved."); return; }
+                    int total = rows.Sum(r => r.Files.Count);
+                    Log(excel ? string.Format("Saved {0} attachment(s) of {1} test case(s) in {2}", total, rows.Count(r => r.Files.Count > 0), folder)
+                              : string.Format("{0} attachment(s) of {1} test case(s), {2} picture(s) in the PDF", total,
+                                              rows.Count(r => r.Files.Count > 0), rows.Sum(r => r.Files.Count(x => x.Image >= 0))));
+                }
                 if (excel)
-                    Results.WriteExcel(file, rows, f, title);
+                    Results.WriteExcel(file, rows, f, title, attach);
                 else
                     Results.WritePdf(file, rows, f, title, string.Format("Domain {0}  /  Project {1}     -     {2} test case(s) in {3} test set(s)     -     exported {4} by {5}",
-                        client.Domain, client.Project, rows.Count, rows.Select(r => r.Set).Distinct().Count(), DateTime.Now.ToString("yyyy-MM-dd HH:mm"), client.User));
+                        client.Domain, client.Project, rows.Count, rows.Select(r => r.Set).Distinct().Count(), DateTime.Now.ToString("yyyy-MM-dd HH:mm"), client.User), pdf);
                 var counts = rows.GroupBy(r => r.Get(f.Status) == "" ? "No Run" : r.Get(f.Status)).Select(g => g.Key + " " + g.Count());
                 Log(string.Format("Saved {0} test case(s) to {1}", rows.Count, file));
                 Log("   " + string.Join(",  ", counts));
@@ -198,6 +233,7 @@ namespace AlmImageUploader
             }, () =>
             {
                 btnExport.Enabled = true;
+                btnStop.Enabled = false;
                 btnOpen.Enabled = LastFile != null;
                 lblStatus.Text = LastFile != null ? "Done." : "";
             });
@@ -258,8 +294,8 @@ namespace AlmImageUploader
             cboShow.Items.AddRange(new object[] { "All rows", "Changes only", "Problems only" });
             cboShow.SelectedIndex = 0;
             cboShow.SelectedIndexChanged += (s, e) => Fill();
-            chkAttach = new CheckBox { Text = "Copy attachments from the exported test cases", AutoSize = true, Margin = new Padding(16, 3, 3, 3) };
-            chkImagesOnly = new CheckBox { Text = "images only", AutoSize = true, Enabled = false };
+            chkAttach = new CheckBox { Text = "Upload attachments", AutoSize = true, Checked = true, Margin = new Padding(16, 3, 3, 3) };
+            chkImagesOnly = new CheckBox { Text = "images only", AutoSize = true };
             chkStatus.CheckedChanged += (s, e) => { Fill(); };
             chkComment.CheckedChanged += (s, e) => { Fill(); };
             chkAttach.CheckedChanged += (s, e) => { chkImagesOnly.Enabled = chkAttach.Checked; Fill(); };
@@ -341,6 +377,11 @@ namespace AlmImageUploader
                 ResultsImport.Match(read, lab);
                 ResultsImport.Compare(client, read, f);
                 Log(string.Format("Read {0} row(s) from {1}", read.Count, Path.GetFileName(path)));
+                var root = read.Select(r => r.AttachRoot).FirstOrDefault(x => x != null);
+                Log(root != null
+                    ? string.Format("Attachments: {0} file(s) in the folder \"{1}\" will be uploaded to the matched test cases.",
+                                    read.Sum(r => r.AttachFiles.Count), Path.GetFileName(root))
+                    : "Attachments: no attachments folder next to this file - they are copied from the exported test cases in ALM instead.");
             }, () =>
             {
                 if (read == null) { lblSummary.Text = "Could not read the file."; return; }
@@ -377,7 +418,8 @@ namespace AlmImageUploader
                     r.Target == null ? "" : r.Set.PathText + "  >  " + r.Target.Label, r.Target == null ? "" : r.How,
                     Change(r.HasStatus && chkStatus.Checked, r.StatusChanges, r.OldStatus, r.NewStatus),
                     Change(r.HasComment && chkComment.Checked && fields.Comment != null, r.CommentChanges, r.OldComment, r.NewComment),
-                    r.AttachResult != "" ? r.AttachResult : CopyWanted(r) ? "will copy" : "",
+                    r.AttachResult != "" ? r.AttachResult
+                        : CopyWanted(r) ? (r.HasFolderFiles ? "will upload " + r.AttachFiles.Count + " file(s)" : "will copy from ALM") : "",
                     r.Error ?? (r.Result != "" ? r.Result : Wanted(r) ? "will change" : "no change"),
                 }) { Tag = r };
                 it.ForeColor = problem ? Color.Firebrick : r.NotHere ? Color.DarkGray : updated ? Color.ForestGreen
@@ -385,12 +427,12 @@ namespace AlmImageUploader
                 lv.Items.Add(it);
             }
             lv.EndUpdate();
-            int change = rows.Count(Wanted), copies = rows.Count(CopyWanted), skipped = rows.Count(r => r.NotHere), bad = rows.Count(r => r.Error != null) - skipped,
-                same = rows.Count - change - bad - skipped;
-            lblSummary.Text = string.Format("{0} row(s):   {1} to change{5},   {2} already the same,   {3} skipped (test set not in this folder, grey),   {4} problem(s) (red).",
+            int change = rows.Count(FieldsWanted), copies = rows.Count(CopyWanted), skipped = rows.Count(r => r.NotHere),
+                bad = rows.Count(r => r.Error != null) - skipped, same = rows.Count - rows.Count(Wanted) - bad - skipped;
+            lblSummary.Text = string.Format("{0} row(s):   {1} with changes,   {5}{2} already the same,   {3} skipped (test set not in this folder, grey),   {4} problem(s) (red).",
                                             rows.Count, change, same, skipped, bad,
-                                            copies > 0 ? " (" + copies + " with attachments to copy)" : "");
-            btnApply.Enabled = change > 0 && !Busy;
+                                            chkAttach.Checked ? copies + " with attachments to copy,   " : "");
+            btnApply.Enabled = rows.Any(Wanted) && !Busy;
         }
 
         protected void DoApply()

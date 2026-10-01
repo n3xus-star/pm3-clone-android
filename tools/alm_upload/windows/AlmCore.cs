@@ -315,12 +315,26 @@ namespace AlmImageUploader
         }
 
         /// Attachments of one entity, in the order ALM lists them.
+        /// Every attachment entity of one entity, all pages (ALM pages long lists).
+        List<Dictionary<string, string>> AttachmentEntities(string entity, string id)
+        {
+            var result = new List<Dictionary<string, string>>();
+            int start = 1;
+            while (true)
+            {
+                var r = Send("GET", Rest(entity) + "/" + id + "/attachments?page-size=1000&start-index=" + start, null, null, null, true);
+                Check(r, "list attachments of " + entity + " " + id);
+                int total;
+                var batch = ParseEntities(r.Body, out total);
+                result.AddRange(batch);
+                if (batch.Count == 0 || result.Count >= total) return result;
+                start += batch.Count;
+            }
+        }
+
         public List<Attachment> GetAttachments(string entity, string id)
         {
-            var r = Send("GET", Rest(entity) + "/" + id + "/attachments", null, null, null, true);
-            Check(r, "list attachments of " + entity + " " + id);
-            int total;
-            return ParseEntities(r.Body, out total).Select(e =>
+            return AttachmentEntities(entity, id).Select(e =>
             {
                 string v;
                 long size;
@@ -347,11 +361,8 @@ namespace AlmImageUploader
 
         public HashSet<string> ListAttachmentNames(string entity, string id)
         {
-            var r = Send("GET", Rest(entity) + "/" + id + "/attachments", null, null, null, true);
-            Check(r, "list attachments of " + entity + " " + id);
-            int total;
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var e in ParseEntities(r.Body, out total))
+            foreach (var e in AttachmentEntities(entity, id))
             {
                 string name;
                 if (e.TryGetValue("name", out name) && name != "")

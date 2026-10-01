@@ -333,22 +333,87 @@ namespace AlmImageUploader
             page.AppendFormat(CultureInfo.InvariantCulture, "{0:0.##} G 0.5 w {1:0.##} {2:0.##} m {3:0.##} {4:0.##} l S\n", gray, x1, y1, x2, y2);
         }
 
+        // ---- images (JPEG, embedded as-is)
+        class PdfImage
+        {
+            public byte[] Jpeg;
+            public int W, H;
+        }
+
+        readonly List<PdfImage> images = new List<PdfImage>();
+
+        /// Turns an image file's bytes into a JPEG small enough for the report. Returns the image
+        /// number to pass to DrawImage, or -1 when the bytes are not a readable image.
+        public int AddImage(byte[] content, int maxPixels = 1200)
+        {
+            try
+            {
+                using (var src = new MemoryStream(content))
+                using (var img = System.Drawing.Image.FromStream(src))
+                {
+                    double scale = Math.Min(1.0, (double)maxPixels / Math.Max(img.Width, img.Height));
+                    int w = Math.Max(1, (int)(img.Width * scale)), h = Math.Max(1, (int)(img.Height * scale));
+                    using (var bmp = new System.Drawing.Bitmap(w, h))
+                    using (var g = System.Drawing.Graphics.FromImage(bmp))
+                    using (var outStream = new MemoryStream())
+                    {
+                        g.Clear(System.Drawing.Color.White);   // transparent PNGs on white
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(img, 0, 0, w, h);
+                        var codec = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders().First(c => c.MimeType == "image/jpeg");
+                        var prm = new System.Drawing.Imaging.EncoderParameters(1);
+                        prm.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 80L);
+                        bmp.Save(outStream, codec, prm);
+                        images.Add(new PdfImage { Jpeg = outStream.ToArray(), W = w, H = h });
+                        return images.Count - 1;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                if (e is OutOfMemoryException || e is ArgumentException || e is System.Runtime.InteropServices.ExternalException) return -1;
+                throw;
+            }
+        }
+
+        /// Width / height ratio of an added image.
+        public double Aspect(int image) { return (double)images[image].W / images[image].H; }
+
+        public void DrawImage(int image, double x, double y, double w, double h)
+        {
+            page.AppendFormat(CultureInfo.InvariantCulture, "q {0:0.##} 0 0 {1:0.##} {2:0.##} {3:0.##} cm /Im{4} Do Q\n", w, h, x, y, image);
+        }
+
+        public void Frame(double x, double y, double w, double h, double gray = 0.7)
+        {
+            page.AppendFormat(CultureInfo.InvariantCulture, "{0:0.##} G 0.5 w {1:0.##} {2:0.##} {3:0.##} {4:0.##} re S\n", gray, x, y, w, h);
+        }
+
         public void Save(string path)
         {
+            // objects: 1 catalog, 2 pages, 3-4 fonts, then the images, then page + content per page
             var latin1 = Encoding.GetEncoding(28591);
-            var objs = new List<string>();
-            objs.Add("<< /Type /Catalog /Pages 2 0 R >>");
-            var kids = string.Join(" ", Enumerable.Range(0, pages.Count).Select(i => (5 + i * 2) + " 0 R"));
-            objs.Add("<< /Type /Pages /Kids [" + kids + "] /Count " + pages.Count + " >>");
-            objs.Add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
-            objs.Add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+            int firstImage = 5, firstPage = firstImage + images.Count;
+            var objs = new List<KeyValuePair<string, byte[]>>();
+            Action<string> add = t => objs.Add(new KeyValuePair<string, byte[]>(t, null));
+            add("<< /Type /Catalog /Pages 2 0 R >>");
+            var kids = string.Join(" ", Enumerable.Range(0, pages.Count).Select(i => (firstPage + i * 2) + " 0 R"));
+            add("<< /Type /Pages /Kids [" + kids + "] /Count " + pages.Count + " >>");
+            add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+            add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+            foreach (var im in images)
+                objs.Add(new KeyValuePair<string, byte[]>(string.Format(
+                    "<< /Type /XObject /Subtype /Image /Width {0} /Height {1} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {2} >>",
+                    im.W, im.H, im.Jpeg.Length), im.Jpeg));
+            var xobjects = images.Count == 0 ? "" : " /XObject << " + string.Join(" ", images.Select((im, i) => "/Im" + i + " " + (firstImage + i) + " 0 R")) + " >>";
             foreach (var p in pages)
             {
                 int contents = objs.Count + 2;   // the page is object Count+1, its content stream the next one
-                objs.Add(string.Format(CultureInfo.InvariantCulture,
-                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {0} {1}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {2} 0 R >>", W, H, contents));
-                var body = p.ToString();
-                objs.Add("<< /Length " + latin1.GetByteCount(body) + " >>\nstream\n" + body + "endstream");
+                add(string.Format(CultureInfo.InvariantCulture,
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {0} {1}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >>{3} >> /Contents {2} 0 R >>",
+                    W, H, contents, xobjects));
+                var body = latin1.GetBytes(p.ToString());
+                objs.Add(new KeyValuePair<string, byte[]>("<< /Length " + body.Length + " >>", body));
             }
             using (var ms = new MemoryStream())
             {
@@ -358,7 +423,14 @@ namespace AlmImageUploader
                 for (int i = 0; i < objs.Count; i++)
                 {
                     offsets.Add(ms.Position);
-                    write((i + 1) + " 0 obj\n" + objs[i] + "\nendobj\n");
+                    write((i + 1) + " 0 obj\n" + objs[i].Key);
+                    if (objs[i].Value != null)
+                    {
+                        write("\nstream\n");
+                        ms.Write(objs[i].Value, 0, objs[i].Value.Length);
+                        write("\nendstream");
+                    }
+                    write("\nendobj\n");
                 }
                 long xref = ms.Position;
                 write("xref\n0 " + (objs.Count + 1) + "\n0000000000 65535 f \n");
@@ -400,12 +472,21 @@ namespace AlmImageUploader
         }
     }
 
+    /// One attachment of a test case in an export: saved next to the Excel file (Rel) and/or
+    /// shown in the PDF (Image, -1 when it is not a picture).
+    public class ExportedFile
+    {
+        public string Name, Rel;
+        public int Image = -1;
+    }
+
     public class ResultRow
     {
         public TestSet Set;
         public TestInstance Inst;
         public string Folder;   // sub folder of the test set, relative to the loaded Test Lab folder
         public readonly Dictionary<string, string> Values = new Dictionary<string, string>();
+        public readonly List<ExportedFile> Files = new List<ExportedFile>();
 
         public string Get(AlmClient.FieldDef f)
         {
@@ -436,17 +517,78 @@ namespace AlmImageUploader
             return rows;
         }
 
+        /// "Results.xlsx" -> "Results - attachments" (next to it).
+        public static string AttachmentFolder(string excelFile)
+        {
+            return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(excelFile)),
+                                Path.GetFileNameWithoutExtension(excelFile) + " - attachments");
+        }
+
+        /// Downloads every test case's attachments: into folder (Excel export) and/or into the
+        /// PDF as pictures. progress(test case number, files so far); stop() ends early.
+        public static void FetchAttachments(AlmClient client, List<ResultRow> rows, string folder, PdfDoc pdf,
+                                            bool imagesOnly, Func<bool> stop, Action<int, int> progress, Action<string> log)
+        {
+            int files = 0;
+            for (int k = 0; k < rows.Count && !stop(); k++)
+            {
+                var r = rows[k];
+                progress(k + 1, files);
+                List<AlmClient.Attachment> atts;
+                try { atts = client.GetAttachments("test-instances", r.Inst.Id); }
+                catch (AlmException e) { log("[FAIL] " + r.Set.Name + " > " + r.Inst.Label + ": " + e.Message); continue; }
+                foreach (var a in atts)
+                {
+                    if (stop()) break;
+                    bool picture = Util.ImageExts.Contains(Path.GetExtension(a.Name).ToLowerInvariant());
+                    if (imagesOnly && !picture) continue;
+                    var f = new ExportedFile { Name = a.Name };
+                    // a PDF only needs the pictures' content; other files are listed by name
+                    if (folder != null || (pdf != null && picture))
+                    {
+                        byte[] content;
+                        try { content = client.DownloadAttachment("test-instances", r.Inst.Id, a); }
+                        catch (Exception e)
+                        {
+                            if (!(e is AlmException || e is WebException)) throw;
+                            log("[FAIL] " + r.Set.Name + " > " + r.Inst.Label + " / " + a.Name + ": " + e.Message);
+                            continue;
+                        }
+                        if (folder != null)
+                        {
+                            f.Rel = Path.Combine(Path.Combine(r.Set.Path.Select(Util.SafeFolderName).ToArray()),
+                                                 Util.SafeFolderName(r.Inst.Label), Util.SafeFolderName(a.Name));
+                            var full = Path.Combine(folder, f.Rel);
+                            Directory.CreateDirectory(Path.GetDirectoryName(full));
+                            File.WriteAllBytes(full, content);
+                        }
+                        if (pdf != null && picture) f.Image = pdf.AddImage(content);
+                    }
+                    r.Files.Add(f);
+                    files++;
+                }
+            }
+            progress(rows.Count, files);
+        }
+
         static readonly string[] Fixed = { "Test Lab folder", "Test Set", "Test Case", "Test Case ID" };
 
-        public static void WriteExcel(string path, List<ResultRow> rows, ResultFields f, string title)
+        public static void WriteExcel(string path, List<ResultRow> rows, ResultFields f, string title, bool withAttachments)
         {
             var cols = f.All().ToList();
             var results = new XlsxSheet { Name = "Results" };
-            results.Rows.Add(Fixed.Concat(cols.Select(c => c.Label)).Concat(new[] { "Test Set ID" }).ToArray());
+            var tail = withAttachments ? new[] { "Test Set ID", "Attachments", "Attachment files" } : new[] { "Test Set ID" };
+            results.Rows.Add(Fixed.Concat(cols.Select(c => c.Label)).Concat(tail).ToArray());
             foreach (var r in rows)
-                results.Rows.Add(new[] { r.Folder, r.Set.Name, r.Inst.Label, r.Inst.Id }
-                                 .Concat(cols.Select(r.Get)).Concat(new[] { r.Set.Id }).ToArray());
-            results.Widths = new double[] { 22, 34, 34, 13 }.Concat(cols.Select(c => c == f.Comment ? 26.0 : 15.0)).Concat(new[] { 12.0 }).ToArray();
+            {
+                var end = withAttachments
+                    ? new[] { r.Set.Id, r.Files.Count.ToString(), string.Join("; ", r.Files.Where(x => x.Rel != null).Select(x => x.Rel)) }
+                    : new[] { r.Set.Id };
+                results.Rows.Add(new[] { r.Folder, r.Set.Name, r.Inst.Label, r.Inst.Id }.Concat(cols.Select(r.Get)).Concat(end).ToArray());
+            }
+            results.Widths = new double[] { 22, 34, 34, 13 }.Concat(cols.Select(c => c == f.Comment ? 26.0 : 15.0))
+                                 .Concat(withAttachments ? new[] { 12.0, 13.0, 60.0 } : new[] { 12.0 }).ToArray();
+            if (withAttachments) results.Numbers.Add(Fixed.Length + cols.Count + 1);
             int statusCol = Fixed.Length + cols.IndexOf(f.Status);
             results.Editable.Add(statusCol);
             results.Lists[statusCol] = f.StatusValues;
@@ -476,11 +618,48 @@ namespace AlmImageUploader
                 "To change results: edit the yellow columns (" + f.Status.Label + (f.Comment != null ? ", " + f.Comment.Label : "") + ") on the Results sheet and save.",
                 "Then in ALM Image Uploader: Load the Test Lab folder to update (this one or another department's), press 'Import results...' and choose this file.",
                 "Rows are matched by Test Case ID when it is the same folder, otherwise by Test Set + Test Case name (similar test set names are matched too).",
+                withAttachments ? "The attachments of every test case are in the folder '" + Path.GetFileName(AttachmentFolder(path)) + "' next to this file. "
+                                  + "Keep it next to the file: Import uploads them to the matched test cases." : "",
                 "You see every change before anything is written to ALM. Do not rename the column titles.",
             })
                 info.Rows.Add(new[] { line });
 
             Xlsx.Write(path, new List<XlsxSheet> { results, summary, info });
+        }
+
+        /// The test case's pictures under its row, in rows of thumbnails; other files by name.
+        static void Pictures(PdfDoc pdf, ResultRow r, double left, double right, double bottom, ref double y, Action newPage)
+        {
+            const double maxH = 170, maxW = 240, gap = 8;
+            var others = r.Files.Where(f => f.Image < 0).Select(f => f.Name).ToList();
+            if (others.Count > 0)
+            {
+                if (y - 12 < bottom) newPage();
+                var text = "Attachments: " + string.Join(",  ", others);
+                pdf.Text(left, y + 2, PdfDoc.Fit(text, 7.5, false, right - left), 7.5, false, new[] { 0.4, 0.4, 0.4 });
+                y -= 12;
+            }
+            double x = left, rowTop = y + 6, rowH = 0;
+            foreach (var file in r.Files.Where(f => f.Image >= 0))
+            {
+                double aspect = pdf.Aspect(file.Image);
+                double h = maxH, w = h * aspect;
+                if (w > maxW) { w = maxW; h = w / aspect; }
+                if (x + w > right) { rowTop -= rowH + gap + 10; x = left; rowH = 0; }
+                if (rowTop - h - 10 < bottom)
+                {
+                    newPage();
+                    rowTop = y + 6;
+                    x = left;
+                    rowH = 0;
+                }
+                pdf.DrawImage(file.Image, x, rowTop - h, w, h);
+                pdf.Frame(x, rowTop - h, w, h);
+                pdf.Text(x, rowTop - h - 8, PdfDoc.Fit(file.Name, 6.5, false, w), 6.5, false, new[] { 0.45, 0.45, 0.45 });
+                x += w + gap;
+                rowH = Math.Max(rowH, h);
+            }
+            if (rowH > 0) y = rowTop - rowH - 10 - 14;
         }
 
         static string Status(ResultRow r, ResultFields f)
@@ -508,9 +687,9 @@ namespace AlmImageUploader
             }
         }
 
-        public static void WritePdf(string path, List<ResultRow> rows, ResultFields f, string title, string subtitle)
+        public static void WritePdf(string path, List<ResultRow> rows, ResultFields f, string title, string subtitle, PdfDoc pdf = null)
         {
-            var pdf = new PdfDoc();
+            pdf = pdf ?? new PdfDoc();
             const double left = 36, right = PdfDoc.W - 36, top = PdfDoc.H - 40, bottom = 40, rowH = 14;
             var grey = new[] { 0.93, 0.93, 0.93 };
             double y = 0;
@@ -574,7 +753,9 @@ namespace AlmImageUploader
                 int n = 0;
                 foreach (var r in g)
                 {
-                    if (y - rowH < bottom) { header(); pdf.Text(left, y, PdfDoc.Fit(g.Key.PathText + "  (continued)", 10, true, right - left), 10, true); y -= rowH + 2; tableHead(); }
+                    // keep the row together with its first row of pictures
+                    double needed = rowH + (r.Files.Any(fl => fl.Image >= 0) ? 170 + 26 : 0) + (r.Files.Any(fl => fl.Image < 0) ? 12 : 0);
+                    if (y - needed < bottom) { header(); pdf.Text(left, y, PdfDoc.Fit(g.Key.PathText + "  (continued)", 10, true, right - left), 10, true); y -= rowH + 2; tableHead(); }
                     n++;
                     pdf.Text(left + 4, y, n.ToString(), 8, false, new[] { 0.5, 0.5, 0.5 });
                     double x = left + 28;
@@ -591,6 +772,7 @@ namespace AlmImageUploader
                     }
                     pdf.Line(left, y - 4, right, y - 4, 0.88);
                     y -= rowH;
+                    Pictures(pdf, r, left + 28, right, bottom, ref y, () => { header(); tableHead(); });
                 }
             }
             // page numbers once the page count is known
@@ -612,11 +794,22 @@ namespace AlmImageUploader
         public bool NotHere;     // its test set is not in the loaded folder: skipped, not an error
         public bool AttachmentsDone;
         public string AttachResult = "";
+        public readonly List<string> AttachFiles = new List<string>();   // from the "Attachment files" column
+        public string AttachRoot;                                           // "<file> - attachments" folder, when present
 
-        /// The exported test case is another one than the target: its attachments can be copied.
+        /// Files saved by the export next to the Excel file.
+        public bool HasFolderFiles { get { return AttachRoot != null && AttachFiles.Count > 0; } }
+
+        /// Attachments can be put on the target: from the export folder, or copied in ALM from
+        /// the exported test case when that is another one than the target.
         public bool CanCopyAttachments
         {
-            get { return Target != null && Error == null && Id != "" && Id != Target.Id && !AttachmentsDone; }
+            get
+            {
+                if (Target == null || Error != null || AttachmentsDone) return false;
+                // the export folder holds every attachment it found: rows without files have none
+                return AttachRoot != null ? AttachFiles.Count > 0 : Id != "" && Id != Target.Id;
+            }
         }
         public string OldStatus = "", OldComment = "";
         public bool StatusChanges, CommentChanges;
@@ -647,17 +840,23 @@ namespace AlmImageUploader
             var head = rows[h];
             int cFolder = Find(head, "Test Lab folder"), cSet = Find(head, "Test Set"), cCase = Find(head, "Test Case"),
                 cId = Find(head, "Test Case ID"), cStatus = Find(head, f.Status.Label, "Status"),
-                cComment = f.Comment == null ? -1 : Find(head, f.Comment.Label, "Comments", "Comment");
+                cComment = f.Comment == null ? -1 : Find(head, f.Comment.Label, "Comments", "Comment"),
+                cFiles = Find(head, "Attachment files");
+            var root = Results.AttachmentFolder(path);
+            if (!Directory.Exists(root)) root = null;
             var list = new List<ImportRow>();
             for (int r = h + 1; r < rows.Count; r++)
             {
                 var row = rows[r];
                 if (Cell(row, cSet) == "" && Cell(row, cCase) == "") continue;
-                list.Add(new ImportRow
+                var item = new ImportRow
                 {
                     Line = r + 1, Folder = Cell(row, cFolder), SetName = Cell(row, cSet), CaseName = Cell(row, cCase), Id = Cell(row, cId),
                     NewStatus = Cell(row, cStatus), HasStatus = cStatus >= 0, NewComment = Cell(row, cComment), HasComment = cComment >= 0,
-                });
+                    AttachRoot = root,
+                };
+                item.AttachFiles.AddRange(Cell(row, cFiles).Split(';').Select(x => x.Trim()).Where(x => x != ""));
+                list.Add(item);
             }
             return list;
         }
@@ -775,6 +974,7 @@ namespace AlmImageUploader
         /// are already there are skipped, so importing twice does not duplicate anything.
         public static string CopyAttachments(AlmClient client, ImportRow r, bool imagesOnly)
         {
+            if (r.HasFolderFiles) return UploadExported(client, r, imagesOnly);
             var atts = client.GetAttachments("test-instances", r.Id)
                              .Where(a => !imagesOnly || Util.ImageExts.Contains(Path.GetExtension(a.Name).ToLowerInvariant()))
                              .ToList();
@@ -790,6 +990,27 @@ namespace AlmImageUploader
             r.AttachmentsDone = true;
             if (atts.Count == 0) return "nothing to copy";
             return "copied " + copied + " attachment(s)" + (skipped > 0 ? ", " + skipped + " already there" : "");
+        }
+
+        /// Uploads the files the export saved for this row ("<file> - attachments\...") to the target.
+        static string UploadExported(AlmClient client, ImportRow r, bool imagesOnly)
+        {
+            var there = client.ListAttachmentNames("test-instances", r.Target.Id);
+            int copied = 0, skipped = 0, missing = 0;
+            foreach (var rel in r.AttachFiles)
+            {
+                var name = Path.GetFileName(rel);
+                if (imagesOnly && !Util.ImageExts.Contains(Path.GetExtension(name).ToLowerInvariant())) continue;
+                var full = Path.Combine(r.AttachRoot, rel);
+                if (!File.Exists(full)) { missing++; continue; }
+                if (there.Contains(name)) { skipped++; continue; }
+                client.UploadAttachment("test-instances", r.Target.Id, File.ReadAllBytes(full), name);
+                there.Add(name);
+                copied++;
+            }
+            r.AttachmentsDone = true;
+            return "uploaded " + copied + " file(s)" + (skipped > 0 ? ", " + skipped + " already there" : "")
+                   + (missing > 0 ? ", " + missing + " missing in the folder" : "");
         }
 
         /// Writes one row to ALM. The status is set directly, or through a run when ALM refuses that.
