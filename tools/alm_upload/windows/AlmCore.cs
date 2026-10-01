@@ -362,8 +362,12 @@ namespace AlmImageUploader
 
         public void UploadAttachment(string entity, string id, string path, string name)
         {
-            var r = Send("POST", Rest(entity) + "/" + id + "/attachments", File.ReadAllBytes(path),
-                         "application/octet-stream",
+            UploadAttachment(entity, id, File.ReadAllBytes(path), name);
+        }
+
+        public void UploadAttachment(string entity, string id, byte[] content, string name)
+        {
+            var r = Send("POST", Rest(entity) + "/" + id + "/attachments", content, "application/octet-stream",
                          new Dictionary<string, string> { { "Slug", HeaderSafe(name) } }, true);
             Check(r, "upload " + name + " to " + entity + " " + id);
         }

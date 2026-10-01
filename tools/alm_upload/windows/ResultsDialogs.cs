@@ -210,7 +210,7 @@ namespace AlmImageUploader
         readonly AlmClient client;
         readonly TestLabFolder lab;
         protected readonly TextBox txtFile;
-        protected readonly CheckBox chkStatus, chkComment;
+        protected readonly CheckBox chkStatus, chkComment, chkAttach, chkImagesOnly;
         protected readonly ComboBox cboShow;
         protected readonly ListView lv;
         readonly Button btnApply, btnStop;
@@ -227,7 +227,7 @@ namespace AlmImageUploader
             this.client = client;
             this.lab = lab;
             Text = "Import test results from Excel";
-            ClientSize = new Size(1040, 640);
+            ClientSize = new Size(1180, 660);
             MaximizeBox = true;
 
             var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(10) };
@@ -258,10 +258,14 @@ namespace AlmImageUploader
             cboShow.Items.AddRange(new object[] { "All rows", "Changes only", "Problems only" });
             cboShow.SelectedIndex = 0;
             cboShow.SelectedIndexChanged += (s, e) => Fill();
+            chkAttach = new CheckBox { Text = "Copy attachments from the exported test cases", AutoSize = true, Margin = new Padding(16, 3, 3, 3) };
+            chkImagesOnly = new CheckBox { Text = "images only", AutoSize = true, Enabled = false };
             chkStatus.CheckedChanged += (s, e) => { Fill(); };
             chkComment.CheckedChanged += (s, e) => { Fill(); };
+            chkAttach.CheckedChanged += (s, e) => { chkImagesOnly.Enabled = chkAttach.Checked; Fill(); };
             var opts = new FlowLayoutPanel { AutoSize = true };
-            opts.Controls.AddRange(new Control[] { chkStatus, chkComment, new Label { Text = "Show:", AutoSize = true, Margin = new Padding(16, 6, 0, 3) }, cboShow });
+            opts.Controls.AddRange(new Control[] { chkStatus, chkComment, chkAttach, chkImagesOnly,
+                                                   new Label { Text = "Show:", AutoSize = true, Margin = new Padding(16, 6, 0, 3) }, cboShow });
             t.Controls.Add(opts, 1, 2);
             t.SetColumnSpan(opts, 2);
 
@@ -272,6 +276,7 @@ namespace AlmImageUploader
             lv.Columns.Add("Matched by", 105);
             lv.Columns.Add("Status", 140);
             lv.Columns.Add("Comments", 140);
+            lv.Columns.Add("Attachments", 130);
             lv.Columns.Add("Result", 230);
             t.Controls.Add(lv, 0, 3);
             t.SetColumnSpan(lv, 3);
@@ -304,10 +309,20 @@ namespace AlmImageUploader
             CancelButton = close;
         }
 
-        bool Wanted(ImportRow r)
+        bool FieldsWanted(ImportRow r)
         {
             return r.Target != null && r.Error == null
                    && ((chkStatus.Checked && r.StatusChanges) || (chkComment.Checked && r.CommentChanges));
+        }
+
+        bool CopyWanted(ImportRow r)
+        {
+            return chkAttach.Checked && r.CanCopyAttachments;
+        }
+
+        bool Wanted(ImportRow r)
+        {
+            return FieldsWanted(r) || CopyWanted(r);
         }
 
         public void LoadFile(string path)
@@ -352,8 +367,9 @@ namespace AlmImageUploader
             lv.Items.Clear();
             foreach (var r in rows)
             {
-                bool problem = (r.Error != null && !r.NotHere) || r.Result.StartsWith("FAILED");
-                if (cboShow.SelectedIndex == 1 && !Wanted(r) && !r.Result.StartsWith("updated")) continue;
+                bool problem = (r.Error != null && !r.NotHere) || r.Result.StartsWith("FAILED") || r.AttachResult.StartsWith("FAILED");
+                bool updated = r.Result.StartsWith("updated") || r.Result == "done";
+                if (cboShow.SelectedIndex == 1 && !Wanted(r) && !updated) continue;
                 if (cboShow.SelectedIndex == 2 && !problem) continue;
                 var it = new ListViewItem(new[]
                 {
@@ -361,17 +377,19 @@ namespace AlmImageUploader
                     r.Target == null ? "" : r.Set.PathText + "  >  " + r.Target.Label, r.Target == null ? "" : r.How,
                     Change(r.HasStatus && chkStatus.Checked, r.StatusChanges, r.OldStatus, r.NewStatus),
                     Change(r.HasComment && chkComment.Checked && fields.Comment != null, r.CommentChanges, r.OldComment, r.NewComment),
+                    r.AttachResult != "" ? r.AttachResult : CopyWanted(r) ? "will copy" : "",
                     r.Error ?? (r.Result != "" ? r.Result : Wanted(r) ? "will change" : "no change"),
                 }) { Tag = r };
-                it.ForeColor = problem ? Color.Firebrick : r.NotHere ? Color.DarkGray : r.Result.StartsWith("updated") ? Color.ForestGreen
+                it.ForeColor = problem ? Color.Firebrick : r.NotHere ? Color.DarkGray : updated ? Color.ForestGreen
                              : Wanted(r) ? SystemColors.WindowText : SystemColors.GrayText;
                 lv.Items.Add(it);
             }
             lv.EndUpdate();
-            int change = rows.Count(Wanted), skipped = rows.Count(r => r.NotHere), bad = rows.Count(r => r.Error != null) - skipped,
+            int change = rows.Count(Wanted), copies = rows.Count(CopyWanted), skipped = rows.Count(r => r.NotHere), bad = rows.Count(r => r.Error != null) - skipped,
                 same = rows.Count - change - bad - skipped;
-            lblSummary.Text = string.Format("{0} row(s):   {1} to change,   {2} already the same,   {3} skipped (test set not in this folder, grey),   {4} problem(s) (red).",
-                                            rows.Count, change, same, skipped, bad);
+            lblSummary.Text = string.Format("{0} row(s):   {1} to change{5},   {2} already the same,   {3} skipped (test set not in this folder, grey),   {4} problem(s) (red).",
+                                            rows.Count, change, same, skipped, bad,
+                                            copies > 0 ? " (" + copies + " with attachments to copy)" : "");
             btnApply.Enabled = change > 0 && !Busy;
         }
 
@@ -380,10 +398,13 @@ namespace AlmImageUploader
             if (Busy || fields == null) return;
             var todo = rows.Where(Wanted).ToList();
             if (todo.Count == 0) return;
-            if (!Confirm(string.Format("Write {0} change(s) to ALM ({1} test case(s))?", todo.Sum(r =>
-                    (chkStatus.Checked && r.StatusChanges ? 1 : 0) + (chkComment.Checked && r.CommentChanges ? 1 : 0)), todo.Count)))
-                return;
-            bool status = chkStatus.Checked, comment = chkComment.Checked;
+            int fieldChanges = todo.Sum(r => FieldsWanted(r) ? (chkStatus.Checked && r.StatusChanges ? 1 : 0) + (chkComment.Checked && r.CommentChanges ? 1 : 0) : 0);
+            int copyRows = todo.Count(CopyWanted);
+            var question = copyRows == 0
+                ? string.Format("Write {0} change(s) to ALM ({1} test case(s))?", fieldChanges, todo.Count)
+                : string.Format("Write {0} change(s) to ALM and copy the attachments of {1} test case(s)?", fieldChanges, copyRows);
+            if (!Confirm(question)) return;
+            bool status = chkStatus.Checked, comment = chkComment.Checked, attach = chkAttach.Checked, imagesOnly = chkImagesOnly.Checked;
             btnApply.Enabled = false;
             btnStop.Enabled = true;
             int ok = 0, failed = 0;
@@ -395,7 +416,9 @@ namespace AlmImageUploader
                     if (stop) { Log("Stopped."); break; }
                     try
                     {
+                        bool copy = attach && r.CanCopyAttachments;
                         r.Result = ResultsImport.Apply(client, r, f, status, comment);
+                        // record the field changes first: they are in ALM even if copying fails below
                         lock (Changes)
                         {
                             if (comment && r.CommentChanges) Changes.Add(new FieldChange { Instance = r.Target, Field = f.Comment.Name, Value = r.NewComment });
@@ -403,6 +426,17 @@ namespace AlmImageUploader
                         }
                         if (comment && r.CommentChanges) { r.OldComment = r.NewComment; r.CommentChanges = false; }
                         if (status && r.StatusChanges) { r.OldStatus = r.NewStatus; r.StatusChanges = false; }
+                        if (copy)
+                        {
+                            try { r.AttachResult = ResultsImport.CopyAttachments(client, r, imagesOnly); }
+                            catch (Exception e)
+                            {
+                                if (!(e is AlmException || e is WebException || e is IOException)) throw;
+                                r.AttachResult = "FAILED: " + e.Message;
+                                failed++;
+                            }
+                            if (r.Result == "no change") r.Result = "done";
+                        }
                         ok++;
                     }
                     catch (Exception e)

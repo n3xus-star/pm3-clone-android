@@ -1,5 +1,12 @@
 # ALM Image Uploader - changelog
 
+## 2.4.0
+- Import results can also duplicate attachments: "Copy attachments from the exported test
+  cases" copies the attachments of each test case in the Excel file (its Test Case ID) to the
+  matched test case in the loaded folder, e.g. from Merchant App to another department's
+  copy. Optional "images only". Attachments with the same name are skipped, so importing
+  twice does not duplicate anything; nothing is copied when source and target are the same.
+
 ## 2.3.0
 - "Export results...": the results of all (or the ticked) test cases, read fresh from ALM,
   - to Excel: Results sheet (Test Lab folder, Test Set, Test Case, ID, Status, Comments,

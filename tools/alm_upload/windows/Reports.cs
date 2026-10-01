@@ -610,6 +610,14 @@ namespace AlmImageUploader
         public TestInstance Target;
         public string How, Error;
         public bool NotHere;     // its test set is not in the loaded folder: skipped, not an error
+        public bool AttachmentsDone;
+        public string AttachResult = "";
+
+        /// The exported test case is another one than the target: its attachments can be copied.
+        public bool CanCopyAttachments
+        {
+            get { return Target != null && Error == null && Id != "" && Id != Target.Id && !AttachmentsDone; }
+        }
         public string OldStatus = "", OldComment = "";
         public bool StatusChanges, CommentChanges;
         public string Result = "";
@@ -761,6 +769,27 @@ namespace AlmImageUploader
                     r.CommentChanges = r.NewComment != r.OldComment;
                 }
             }
+        }
+
+        /// Copies the attachments of the exported test case (row.Id) to the matched one; names that
+        /// are already there are skipped, so importing twice does not duplicate anything.
+        public static string CopyAttachments(AlmClient client, ImportRow r, bool imagesOnly)
+        {
+            var atts = client.GetAttachments("test-instances", r.Id)
+                             .Where(a => !imagesOnly || Util.ImageExts.Contains(Path.GetExtension(a.Name).ToLowerInvariant()))
+                             .ToList();
+            var there = client.ListAttachmentNames("test-instances", r.Target.Id);
+            int copied = 0, skipped = 0;
+            foreach (var a in atts)
+            {
+                if (there.Contains(a.Name)) { skipped++; continue; }
+                client.UploadAttachment("test-instances", r.Target.Id, client.DownloadAttachment("test-instances", r.Id, a), a.Name);
+                there.Add(a.Name);
+                copied++;
+            }
+            r.AttachmentsDone = true;
+            if (atts.Count == 0) return "nothing to copy";
+            return "copied " + copied + " attachment(s)" + (skipped > 0 ? ", " + skipped + " already there" : "");
         }
 
         /// Writes one row to ALM. The status is set directly, or through a run when ALM refuses that.
