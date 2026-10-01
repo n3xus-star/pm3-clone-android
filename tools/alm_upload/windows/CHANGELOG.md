@@ -1,5 +1,18 @@
 # ALM Image Uploader - changelog
 
+## 2.3.0
+- "Export results...": the results of all (or the ticked) test cases, read fresh from ALM,
+  - to Excel: Results sheet (Test Lab folder, Test Set, Test Case, ID, Status, Comments,
+    Tester, Exec Date, Time), Status / Comments drop-downs with the ALM values, editable
+    columns in yellow, filter and frozen header; Summary sheet (counts per test set);
+  - to PDF: A4 landscape report with a summary and one table per test set.
+- "Import results...": reads such an Excel file into the loaded Test Lab folder - the same
+  one or another department's. Rows are matched by test case ID (same folder), else by test
+  set + test case name, else by a similar test set name ("5.5 Login" ~ "5.5 Login - Finance").
+  Preview shows every change (old -> new), skipped rows and problems before anything is
+  written; Status is set directly, or as a run when ALM does not allow that.
+- The test tree shows each test case's status (e.g. "- Passed") and can filter by it.
+
 ## 2.2.0
 - Load always starts with every image and test case visible (Search / Show are reset), and
   the image list title shows "Images (271)" or "Images (showing 12 of 271)".

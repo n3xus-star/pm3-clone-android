@@ -40,7 +40,7 @@ namespace AlmImageUploader
         bool imgSortDesc;
         AlmClient.FieldDef commentField;   // the "Comments" column, shown as [NA] etc. in the tree
         Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
-               btnUntick, btnTickAll, btnSetField, btnDownload, btnSelectAll, btnDeselectAll;
+               btnUntick, btnTickAll, btnSetField, btnDownload, btnSelectAll, btnDeselectAll, btnExport, btnImport;
         Label lblTicked, lblImagesTitle;
         ListView lvImages;
         PictureBox picPreview;
@@ -352,16 +352,22 @@ namespace AlmImageUploader
             main.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
 
             // header: who / where + change project / log out
-            var head = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Dock = DockStyle.Top };
+            var head = new TableLayoutPanel { ColumnCount = 5, AutoSize = true, Dock = DockStyle.Top };
             head.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             lblWho3 = new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 8, 3, 3) };
             var btnChange = B("<  Change project");
             var btnLogout = B("Log out");
+            btnExport = B("Export results...");
+            btnImport = B("Import results...");
             btnChange.Click += (s, e) => { if (!Busy()) ShowPage(pageProject); };
             btnLogout.Click += (s, e) => { if (!Busy()) Logout(); };
+            btnExport.Click += (s, e) => OpenExport();
+            btnImport.Click += (s, e) => OpenImport();
             head.Controls.Add(lblWho3, 0, 0);
-            head.Controls.Add(btnChange, 1, 0);
-            head.Controls.Add(btnLogout, 2, 0);
+            head.Controls.Add(btnExport, 1, 0);
+            head.Controls.Add(btnImport, 2, 0);
+            head.Controls.Add(btnChange, 3, 0);
+            head.Controls.Add(btnLogout, 4, 0);
             main.Controls.Add(head, 0, 0);
 
             // sources
@@ -607,7 +613,7 @@ namespace AlmImageUploader
                     if (!(ex is AlmException || ex is WebException || ex is System.Xml.XmlException)) throw;
                     Log("Could not read the test case fields (the Comments indicator is off): " + ex.Message);
                 }
-                var l = new TestLabFolder(client, labArg, cf == null ? null : new[] { cf.Name });
+                var l = new TestLabFolder(client, labArg, cf == null ? new[] { "status" } : new[] { cf.Name, "status" });
                 if (cf != null) Log("Showing the '" + cf.Label + "' column of each test case, e.g. [NA].");
                 Log(string.Format("Found {0} test set(s) with {1} test case(s).", l.Sets.Count, l.InstanceCount));
                 var imgs = Util.ListImages(folder).Select(f => new ImageItem { File = f, Rel = Util.RelPath(folder, f) }).ToList();
@@ -672,7 +678,7 @@ namespace AlmImageUploader
         void EnableAssignUi(bool on)
         {
             foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnTickAll, btnSetField, btnDownload,
-                                              btnSelectAll, btnDeselectAll })
+                                              btnSelectAll, btnDeselectAll, btnExport, btnImport })
                 c.Enabled = on;
         }
 
@@ -804,7 +810,15 @@ namespace AlmImageUploader
             int n = CountFor(inst);
             var text = n == 0 ? inst.Label : string.Format("{0}   ({1} image{2})", inst.Label, n, n == 1 ? "" : "s");
             var c = Comment(inst);
-            return c == "" ? text : text + "   [" + c + "]";
+            if (c != "") text += "   [" + c + "]";
+            var st = Status(inst);
+            return st == "" || st == "No Run" ? text : text + "   - " + st;
+        }
+
+        static string Status(TestInstance inst)
+        {
+            string v;
+            return inst.Values.TryGetValue("status", out v) ? (v ?? "").Trim() : "";
         }
 
         string NodeText(TestSet ts)
@@ -843,6 +857,13 @@ namespace AlmImageUploader
                 new TreeFilter { Text = "Ticked", Match = i => ticked.Contains(i) },
                 new TreeFilter { Text = "Waiting for upload", Match = i => images.Any(img => img.Assigned.Contains(i) && !img.Uploaded.Contains(i.Id)) },
             };
+            if (lab != null)
+                foreach (var st in lab.Sets.SelectMany(s => s.Instances).Select(i => Status(i) == "" ? "No Run" : Status(i))
+                                      .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(v => v, StringComparer.OrdinalIgnoreCase))
+                {
+                    var value = st;
+                    items.Add(new TreeFilter { Text = "Status: " + value, Match = i => string.Equals(Status(i) == "" ? "No Run" : Status(i), value, StringComparison.OrdinalIgnoreCase) });
+                }
             if (commentField != null && lab != null)
             {
                 var label = commentField.Label;
@@ -1135,6 +1156,34 @@ namespace AlmImageUploader
         }
 
         /// Keep the [NA] indicator in step with what the Set field dialog changed in ALM.
+        void OpenExport()
+        {
+            if (Busy() || lab == null) return;
+            var folder = Setting("export_folder");
+            if (folder == "") folder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            var ticks = lab.Sets.SelectMany(s => s.Instances).Where(ticked.Contains).ToList();
+            using (var dlg = new ExportDialog(client, lab, ticks, txtLabFolder.Text.Trim(), folder))
+            {
+                dlg.ShowDialog(this);
+                if (dlg.LastFile != null)
+                {
+                    settings["export_folder"] = Path.GetDirectoryName(dlg.LastFile);
+                    SaveSettings();
+                }
+            }
+        }
+
+        void OpenImport()
+        {
+            if (Busy() || lab == null) return;
+            var folder = Setting("export_folder");
+            using (var dlg = new ImportDialog(client, lab, txtLabFolder.Text.Trim(), folder))
+            {
+                dlg.ShowDialog(this);
+                ApplyFieldChanges(dlg.Changes);
+            }
+        }
+
         void ApplyFieldChanges(List<FieldChange> changes)
         {
             foreach (var ch in changes)

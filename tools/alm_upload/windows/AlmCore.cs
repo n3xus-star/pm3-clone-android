@@ -428,12 +428,31 @@ namespace AlmImageUploader
         public void UpdateEntity(string collection, string id, Dictionary<string, string> values)
         {
             var type = collection.EndsWith("s") ? collection.Substring(0, collection.Length - 1) : collection;
+            var r = Send("PUT", Rest(collection) + "/" + id, EntityXml(type, values), "application/xml", null, true);
+            Check(r, "update " + type + " " + id);
+        }
+
+        static byte[] EntityXml(string type, Dictionary<string, string> values)
+        {
             var xml = new StringBuilder("<Entity Type=\"" + type + "\"><Fields>");
             foreach (var kv in values)
                 xml.Append("<Field Name=\"" + SecurityElementEscape(kv.Key) + "\"><Value>" + SecurityElementEscape(kv.Value) + "</Value></Field>");
             xml.Append("</Fields></Entity>");
-            var r = Send("PUT", Rest(collection) + "/" + id, Encoding.UTF8.GetBytes(xml.ToString()), "application/xml", null, true);
-            Check(r, "update " + type + " " + id);
+            return Encoding.UTF8.GetBytes(xml.ToString());
+        }
+
+        /// Records a result the way ALM's own "fast run" does: a manual run with that status,
+        /// which also sets the test case's status. Used when the status cannot be set directly.
+        public void CreateRun(TestInstance inst, string status)
+        {
+            var values = new Dictionary<string, string>
+            {
+                { "name", "Fast_Run_" + DateTime.Now.ToString("M-d_H-m-s") },
+                { "test-id", inst.TestId }, { "testcycl-id", inst.Id }, { "cycle-id", inst.SetId },
+                { "owner", user ?? "" }, { "subtype-id", "hp.qc.run.MANUAL" }, { "status", status },
+            };
+            var r = Send("POST", Rest("runs"), EntityXml("run", values), "application/xml", null, true);
+            Check(r, "create a run for test case " + inst.Id);
         }
 
         public static string QueryValue(string name)

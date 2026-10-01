@@ -8,7 +8,7 @@ No Python and no installation needed: one `.exe` file.
 
 ## Windows program (single .exe, recommended)
 
-Current version: **2.2.0** (see `windows/CHANGELOG.md`).
+Current version: **2.3.0** (see `windows/CHANGELOG.md`).
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
@@ -35,6 +35,11 @@ nothing to install and no Python. It works step by step:
      "1.9" before "1.10"), "Show" filters images by status; the test tree has "Sort"
      and "Show" (with / without images, ticked, waiting for upload, Comments value)
    - the Comments column of each test case is shown as e.g. `[NA]` (grey)
+   - **Export results...** saves the results (Status, Comments, Tester, Exec Date) of all
+     or the ticked test cases to Excel (editable, with drop-downs) or to a PDF report
+   - **Import results...** reads such an Excel file into the loaded folder - the same one or
+     another department's (matched by ID, else by test set + test case name, also similar
+     test set names) - and shows every change before writing it to ALM
    - **Set field...** changes one field (e.g. the *Comments* selection list to *NA*)
      on all ticked test cases; the values come from the field's ALM list
    The assignments and what was uploaded are saved in `ALM-assignments.txt` in the
