@@ -8,7 +8,7 @@ No Python and no installation needed: one `.exe` file.
 
 ## Windows program (single .exe, recommended)
 
-Current version: **2.5.0** (see `windows/CHANGELOG.md`).
+Current version: **2.6.0** (see `windows/CHANGELOG.md`).
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
@@ -26,7 +26,11 @@ nothing to install and no Python. It works step by step:
    - tick test sets / test cases (ticking a test set ticks all its test cases) to
      assign the selected images to every ticked test case at once; **Untick all**
      and **Clear all assignments** start over
-   - **Upload assigned images** uploads everything not uploaded yet
+   - the left side has two tabs: **Images**, and **Attachments** with two views -
+     "In the image folder" (other files such as Excel, PDF, Word or logs, assigned and
+     uploaded like images) and "In ALM" (the attachments already on the ticked test cases:
+     preview, open, download, copy to the ticked test cases, delete with confirmation)
+   - **Upload assigned files** uploads everything not uploaded yet
    - **Download attachments...** saves the attachments of all ticked test cases as
      `<folder>\<test set>\<test case>\<file>`, renamed after the test case
      (e.g. `1.1_Land_Screen_1.png`); loading that folder assigns every file to its

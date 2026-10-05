@@ -42,6 +42,31 @@ namespace AlmImageUploader
         Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
                btnUntick, btnTickAll, btnSetField, btnDownload, btnSelectAll, btnDeselectAll, btnExport, btnImport;
         Label lblTicked, lblImagesTitle;
+        // left side: tabs Images / Attachments (files in the folder, or attachments in ALM)
+        enum LeftMode { Images, Files, Alm }
+        LeftMode leftMode = LeftMode.Images;
+        TabControl leftTabs;
+        TabPage pageImages, pageAttach;
+        Control filePanel, almPanel;
+        Panel attachHost;
+        RadioButton rbAttachFolder, rbAttachAlm;
+        Label lblFileInfo, lblTip;
+        Button btnOpenFile;
+        Panel previewHost;
+        // "In ALM" list
+        class AlmRow
+        {
+            public TestInstance Inst;
+            public AlmClient.Attachment Att;
+        }
+        List<AlmRow> almRows = new List<AlmRow>();
+        ListView lvAlm;
+        TextBox txtAlmFilter;
+        ComboBox cboAlmType;
+        Label lblAlmTitle, lblAlmInfo;
+        PictureBox picAlm;
+        Button btnAlmRefresh, btnAlmDownload, btnAlmCopy, btnAlmDelete, btnAlmOpen;
+        int almPreviewSeq;
         ListView lvImages;
         PictureBox picPreview;
         TreeView tree;
@@ -395,7 +420,7 @@ namespace AlmImageUploader
 
             // images (left) | test cases (right)
             split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical };
-            split.Panel1.Controls.Add(BuildImagesPanel());
+            split.Panel1.Controls.Add(BuildLeftTabs());
             split.Panel2.Controls.Add(BuildTestsPanel());
             main.Controls.Add(split, 0, 2);
 
@@ -403,7 +428,7 @@ namespace AlmImageUploader
             var bottom = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Dock = DockStyle.Top };
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             lblSummary = new Label { AutoSize = true, Margin = new Padding(3, 9, 3, 3), Text = "Choose the Test Lab folder and the image folder, then press Load." };
-            btnUpload = B("Upload assigned images", true);
+            btnUpload = B("Upload assigned files", true);
             btnStop = B("Stop");
             btnStop.Enabled = false;
             btnUpload.Click += OnUpload;
@@ -434,6 +459,68 @@ namespace AlmImageUploader
             Controls.Add(pageWork);
         }
 
+        Control BuildLeftTabs()
+        {
+            leftTabs = new TabControl { Dock = DockStyle.Fill };
+            pageImages = new TabPage("Images") { Padding = new Padding(2) };
+            pageAttach = new TabPage("Attachments") { Padding = new Padding(2) };
+            leftTabs.TabPages.Add(pageImages);
+            leftTabs.TabPages.Add(pageAttach);
+            filePanel = BuildImagesPanel();
+            almPanel = BuildAlmPanel();
+            pageImages.Controls.Add(filePanel);
+
+            var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = new Padding(0) };
+            t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            rbAttachFolder = new RadioButton { Text = "In the image folder  (Excel, PDF, Word, logs, ... to upload)", AutoSize = true, Checked = true };
+            rbAttachAlm = new RadioButton { Text = "In ALM  (already on the ticked test cases)", AutoSize = true, Margin = new Padding(16, 3, 3, 3) };
+            rbAttachFolder.CheckedChanged += (s, e) => ApplyLeftMode();
+            t.Controls.Add(Flow(rbAttachFolder, rbAttachAlm), 0, 0);
+            attachHost = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0) };
+            t.Controls.Add(attachHost, 0, 1);
+            pageAttach.Controls.Add(t);
+            leftTabs.SelectedIndexChanged += (s, e) => ApplyLeftMode();
+            return leftTabs;
+        }
+
+        /// Shows the list that fits the chosen tab: images, other files of the folder, or ALM's attachments.
+        void ApplyLeftMode()
+        {
+            var mode = leftTabs.SelectedTab == pageImages ? LeftMode.Images : rbAttachFolder.Checked ? LeftMode.Files : LeftMode.Alm;
+            bool changed = mode != leftMode;
+            leftMode = mode;
+            if (mode == LeftMode.Alm)
+            {
+                if (almPanel.Parent != attachHost) { almPanel.Parent = attachHost; almPanel.Dock = DockStyle.Fill; }
+                almPanel.Visible = true;
+                filePanel.Parent = pageImages;
+                if (lab != null && almRows.Count == 0 && changed && !Busy()) LoadAlmAttachments();
+            }
+            else
+            {
+                almPanel.Visible = false;
+                var host = mode == LeftMode.Images ? (Control)pageImages : attachHost;
+                if (filePanel.Parent != host) { filePanel.Parent = host; filePanel.Dock = DockStyle.Fill; }
+                filePanel.Visible = true;
+                filePanel.BringToFront();
+                lblTip.Text = mode == LeftMode.Images
+                    ? "Tip: Ctrl/Shift+click or Ctrl+A to pick many images."
+                    : "Other files in the image folder: assign and upload them like images.";
+                if (changed)
+                {
+                    foreach (ListViewItem it in lvImages.SelectedItems) it.Selected = false;
+                    RefreshImages();
+                    OnImageSelected();
+                }
+            }
+        }
+
+        bool InCurrentList(ImageItem img)
+        {
+            return leftMode == LeftMode.Files ? !img.IsImage : img.IsImage;
+        }
+
         Control BuildImagesPanel()
         {
             var p = Rows(SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize);
@@ -444,7 +531,7 @@ namespace AlmImageUploader
 
             txtImgFilter = new TextBox { Width = 105, Margin = new Padding(3, 4, 3, 3) };
             cboImgFilter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150, Margin = new Padding(3, 4, 3, 3) };
-            cboImgFilter.Items.AddRange(new object[] { "All images", "Not assigned", "With suggestion", "Assigned, not uploaded", "Uploaded" });
+            cboImgFilter.Items.AddRange(new object[] { "All", "Not assigned", "With suggestion", "Assigned, not uploaded", "Uploaded" });
             cboImgFilter.SelectedIndex = 0;
             txtImgFilter.TextChanged += (s, e) => RefreshImages();
             cboImgFilter.SelectedIndexChanged += (s, e) => RefreshImages();
@@ -479,7 +566,22 @@ namespace AlmImageUploader
             lblPreview = new Label { AutoSize = true, Margin = new Padding(3, 6, 3, 0), MaximumSize = new Size(560, 0) };
             p.Controls.Add(lblPreview, 0, 3);
             picPreview = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = SystemColors.ControlDark };
-            p.Controls.Add(picPreview, 0, 4);
+            // for files that are not pictures: what it is, and a button to open it
+            var info = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = SystemColors.Window, Visible = false };
+            lblFileInfo = new Label { AutoSize = true, Margin = new Padding(10, 10, 10, 6), MaximumSize = new Size(520, 0) };
+            btnOpenFile = B("Open file");
+            btnOpenFile.Margin = new Padding(10, 3, 3, 3);
+            btnOpenFile.Click += (s, e) =>
+            {
+                var sel = SelectedImages();
+                if (sel.Count == 1) OpenWithWindows(sel[0].File);
+            };
+            info.Controls.Add(lblFileInfo, 0, 0);
+            info.Controls.Add(btnOpenFile, 0, 1);
+            previewHost = new Panel { Dock = DockStyle.Fill, Margin = new Padding(3) };
+            previewHost.Controls.Add(picPreview);
+            previewHost.Controls.Add(info);
+            p.Controls.Add(previewHost, 0, 4);
 
             btnAccept = B("Accept suggestion");
             btnUnassign = B("Remove assignment");
@@ -487,9 +589,258 @@ namespace AlmImageUploader
             btnAccept.Click += (s, e) => AcceptSuggestions();
             btnUnassign.Click += (s, e) => UnassignSelected();
             btnClearAssign.Click += (s, e) => ClearAllAssignments();
-            p.Controls.Add(Flow(btnAccept, btnUnassign, btnClearAssign,
-                new Label { Text = "Tip: Ctrl/Shift+click or Ctrl+A to pick many images.", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(6, 9, 3, 3) }), 0, 5);
+            lblTip = new Label { Text = "Tip: Ctrl/Shift+click or Ctrl+A to pick many images.", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(6, 9, 3, 3) };
+            p.Controls.Add(Flow(btnAccept, btnUnassign, btnClearAssign, lblTip), 0, 5);
             return p;
+        }
+
+        // ------------------------------------------------ attachments in ALM
+        Control BuildAlmPanel()
+        {
+            var p = Rows(SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize);
+            p.RowStyles[2] = new RowStyle(SizeType.Percent, 58);
+            p.RowStyles[4] = new RowStyle(SizeType.Percent, 42);
+            p.Visible = false;
+            lblAlmTitle = new Label { Text = "Attachments in ALM", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 0) };
+            p.Controls.Add(lblAlmTitle, 0, 0);
+            txtAlmFilter = new TextBox { Width = 105, Margin = new Padding(3, 4, 3, 3) };
+            cboAlmType = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110, Margin = new Padding(3, 4, 3, 3) };
+            cboAlmType.Items.AddRange(new object[] { "All", "Images", "Other files" });
+            cboAlmType.SelectedIndex = 0;
+            txtAlmFilter.TextChanged += (s, e) => FillAlmList();
+            cboAlmType.SelectedIndexChanged += (s, e) => FillAlmList();
+            btnAlmRefresh = B("Load / Refresh");
+            btnAlmRefresh.Click += (s, e) => LoadAlmAttachments();
+            var selAll = B("Select all");
+            selAll.Click += (s, e) => { lvAlm.BeginUpdate(); foreach (ListViewItem it in lvAlm.Items) it.Selected = true; lvAlm.EndUpdate(); lvAlm.Focus(); };
+            p.Controls.Add(Flow(new Label { Text = "Search:", AutoSize = true, Margin = new Padding(3, 7, 0, 3) }, txtAlmFilter,
+                                new Label { Text = "Show:", AutoSize = true, Margin = new Padding(8, 7, 0, 3) }, cboAlmType, btnAlmRefresh, selAll), 0, 1);
+
+            lvAlm = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = true, GridLines = true };
+            lvAlm.Columns.Add("Test case", 230);
+            lvAlm.Columns.Add("File", 210);
+            lvAlm.Columns.Add("Size", 70);
+            lvAlm.SelectedIndexChanged += (s, e) => OnAlmSelected();
+            lvAlm.DoubleClick += (s, e) => OpenAlmSelected();
+            lvAlm.KeyDown += (s, e) => { if (e.Control && e.KeyCode == Keys.A) foreach (ListViewItem it in lvAlm.Items) it.Selected = true; };
+            p.Controls.Add(lvAlm, 0, 2);
+            lblAlmInfo = new Label { AutoSize = true, Margin = new Padding(3, 6, 3, 0), MaximumSize = new Size(560, 0) };
+            p.Controls.Add(lblAlmInfo, 0, 3);
+            picAlm = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = SystemColors.ControlDark };
+            p.Controls.Add(picAlm, 0, 4);
+            btnAlmDownload = B("Download...");
+            btnAlmCopy = B("Copy to ticked test cases");
+            btnAlmDelete = B("Delete from ALM");
+            btnAlmOpen = B("Open");
+            btnAlmDelete.ForeColor = Color.Firebrick;
+            btnAlmDownload.Click += (s, e) => DownloadAlmSelected();
+            btnAlmCopy.Click += (s, e) => CopyAlmSelected();
+            btnAlmDelete.Click += (s, e) => DeleteAlmSelected();
+            btnAlmOpen.Click += (s, e) => OpenAlmSelected();
+            p.Controls.Add(Flow(btnAlmOpen, btnAlmDownload, btnAlmCopy, btnAlmDelete), 0, 5);
+            return p;
+        }
+
+        List<AlmRow> SelectedAlm()
+        {
+            return lvAlm.SelectedItems.Cast<ListViewItem>().Select(it => (AlmRow)it.Tag).ToList();
+        }
+
+        /// Reads the attachments of the ticked test cases (or of the selected test set / test case).
+        void LoadAlmAttachments(bool afterJob = false)
+        {
+            // afterJob: called from a finished job's last step, while its thread is still ending
+            if ((!afterJob && Busy()) || lab == null) return;
+            var targets = Targets();
+            if (targets.Count == 0) { lblAlmTitle.Text = "Attachments in ALM"; lblAlmInfo.Text = "Tick test cases or test sets on the right, then press Load / Refresh."; return; }
+            SetBusy(true);
+            lblAlmInfo.Text = "Reading attachments from ALM...";
+            var rows = new List<AlmRow>();
+            RunBackground(() =>
+            {
+                for (int k = 0; k < targets.Count; k++)
+                {
+                    var inst = targets[k];
+                    int shown = k + 1;
+                    Ui(() => lblAlmInfo.Text = string.Format("Reading attachments from ALM...  test case {0} / {1}", shown, targets.Count));
+                    rows.AddRange(client.GetAttachments("test-instances", inst.Id).Select(a => new AlmRow { Inst = inst, Att = a }));
+                }
+                Ui(() =>
+                {
+                    almRows = rows;
+                    lblAlmTitle.Text = string.Format("Attachments in ALM  -  {0} file(s) on {1} of {2} test case(s)",
+                                                     rows.Count, rows.Select(r => r.Inst).Distinct().Count(), targets.Count);
+                    lblAlmInfo.Text = "";
+                    FillAlmList();
+                });
+            }, err => Ui(() => lblAlmInfo.Text = "ERROR: " + err), () => Ui(() => SetBusy(false)));
+        }
+
+        void FillAlmList()
+        {
+            var q = Util.Norm(txtAlmFilter.Text);
+            var keep = new HashSet<AlmRow>(SelectedAlm());
+            lvAlm.BeginUpdate();
+            lvAlm.Items.Clear();
+            foreach (var r in almRows)
+            {
+                bool pic = Util.HasImageExt(r.Att.Name);
+                if (cboAlmType.SelectedIndex == 1 && !pic || cboAlmType.SelectedIndex == 2 && pic) continue;
+                var caseText = CaseText(lab, r.Inst);
+                if (q != "" && !Util.Norm(caseText + " " + r.Att.Name).Contains(q)) continue;
+                var it = new ListViewItem(new[] { caseText, r.Att.Name, FileSize(r.Att.Size) }) { Tag = r };
+                lvAlm.Items.Add(it);
+                if (keep.Contains(r)) it.Selected = true;
+            }
+            lvAlm.EndUpdate();
+        }
+
+        void SetAlmPicture(Image img)
+        {
+            var old = picAlm.Image;
+            picAlm.Image = img;
+            if (old != null) old.Dispose();
+        }
+
+        void OnAlmSelected()
+        {
+            var sel = SelectedAlm();
+            int seq = ++almPreviewSeq;
+            SetAlmPicture(null);
+            if (sel.Count != 1)
+            {
+                lblAlmInfo.Text = sel.Count > 1 ? sel.Count + " attachments selected" : "";
+                return;
+            }
+            var r = sel[0];
+            lblAlmInfo.Text = string.Format("{0}   -   {1}   {2}", r.Att.Name, Kind(r.Att.Name), FileSize(r.Att.Size));
+            if (!Util.HasImageExt(r.Att.Name)) return;
+            var c = client;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Image img = null;
+                try
+                {
+                    using (var ms = new MemoryStream(c.DownloadAttachment("test-instances", r.Inst.Id, r.Att)))
+                    using (var src = Image.FromStream(ms))
+                        img = new Bitmap(src);
+                }
+                catch (Exception) { }
+                Ui(() => { if (seq == almPreviewSeq) SetAlmPicture(img); else if (img != null) img.Dispose(); });
+            });
+        }
+
+        /// Downloads one attachment to a temporary folder and opens it with its Windows program.
+        void OpenAlmSelected()
+        {
+            var sel = SelectedAlm();
+            if (sel.Count != 1 || Busy()) { if (sel.Count > 1) Say("Select one attachment to open."); return; }
+            var r = sel[0];
+            SetBusy(true);
+            string path = null;
+            RunBackground(() =>
+            {
+                var dir = Path.Combine(Path.GetTempPath(), "ALMImageUploader", r.Inst.Id);
+                Directory.CreateDirectory(dir);
+                path = Path.Combine(dir, Util.SafeFolderName(r.Att.Name));
+                File.WriteAllBytes(path, client.DownloadAttachment("test-instances", r.Inst.Id, r.Att));
+            }, err => Log("ERROR: " + err), () => Ui(() => { SetBusy(false); if (path != null && File.Exists(path)) OpenWithWindows(path); }));
+        }
+
+        void DownloadAlmSelected()
+        {
+            var sel = SelectedAlm();
+            if (sel.Count == 0 || Busy()) { if (sel.Count == 0) Say("Select the attachments to download first."); return; }
+            string folder;
+            using (var d = new FolderBrowserDialog { Description = "Save the attachments into this folder (as <test set>\\<test case>\\file)", SelectedPath = Setting("download_folder") })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                folder = d.SelectedPath;
+            }
+            settings["download_folder"] = folder;
+            SaveSettings();
+            DownloadAlmTo(sel, folder);
+        }
+
+        void DownloadAlmTo(List<AlmRow> sel, string folder)
+        {
+            SetBusy(true);
+            RunBackground(() =>
+            {
+                int ok = 0;
+                foreach (var r in sel)
+                {
+                    if (stopRequested) break;
+                    var ts = lab.SetOf(r.Inst);
+                    var dir = lab.LocalSetPath(ts).Aggregate(folder, (acc, part) => Path.Combine(acc, Util.SafeFolderName(part)));
+                    dir = Path.Combine(dir, Util.SafeFolderName(r.Inst.Label));
+                    Directory.CreateDirectory(dir);
+                    File.WriteAllBytes(Path.Combine(dir, Util.SafeFolderName(r.Att.Name)), client.DownloadAttachment("test-instances", r.Inst.Id, r.Att));
+                    ok++;
+                }
+                Log(string.Format("Downloaded {0} attachment(s) to {1}", ok, folder));
+            }, err => Log("ERROR: " + err), () => Ui(() => SetBusy(false)));
+        }
+
+        /// Duplicates the selected attachments onto every ticked test case (same names are skipped).
+        void CopyAlmSelected()
+        {
+            var sel = SelectedAlm();
+            if (sel.Count == 0 || Busy()) { if (sel.Count == 0) Say("Select the attachments to copy first."); return; }
+            var targets = lab.Sets.SelectMany(s2 => s2.Instances).Where(ticked.Contains).ToList();
+            if (targets.Count == 0) { Say("Tick the test cases to copy the attachments to (on the right)."); return; }
+            if (!Confirm(string.Format("Copy {0} attachment(s) to each of {1} ticked test case(s)?\n\nFiles with the same name already on a test case are skipped.",
+                                       sel.Count, targets.Count))) return;
+            SetBusy(true);
+            RunBackground(() =>
+            {
+                int copied = 0, skipped = 0;
+                var content = new Dictionary<AlmRow, byte[]>();
+                foreach (var target in targets)
+                {
+                    if (stopRequested) break;
+                    var there = client.ListAttachmentNames("test-instances", target.Id);
+                    foreach (var r in sel)
+                    {
+                        if (r.Inst == target || there.Contains(r.Att.Name)) { skipped++; continue; }
+                        byte[] bytes;
+                        if (!content.TryGetValue(r, out bytes))
+                            content[r] = bytes = client.DownloadAttachment("test-instances", r.Inst.Id, r.Att);
+                        client.UploadAttachment("test-instances", target.Id, bytes, r.Att.Name);
+                        there.Add(r.Att.Name);
+                        copied++;
+                    }
+                    Log(string.Format("[ OK ] copied to {0}", CaseText(lab, target)));
+                }
+                Log(string.Format("Done: {0} attachment(s) copied, {1} skipped (already there).", copied, skipped));
+            }, err => Log("ERROR: " + err), () => Ui(() => { SetBusy(false); LoadAlmAttachments(true); }));
+        }
+
+        void DeleteAlmSelected()
+        {
+            var sel = SelectedAlm();
+            if (sel.Count == 0 || Busy()) { if (sel.Count == 0) Say("Select the attachments to delete first."); return; }
+            var list = string.Join("\n", sel.Take(15).Select(r => "  " + CaseText(lab, r.Inst) + "  /  " + r.Att.Name));
+            if (sel.Count > 15) list += "\n  ... and " + (sel.Count - 15) + " more";
+            if (!Confirm(string.Format("Delete {0} attachment(s) from ALM?\n\n{1}\n\nThis cannot be undone.", sel.Count, list))) return;
+            SetBusy(true);
+            var deleted = new List<AlmRow>();
+            RunBackground(() =>
+            {
+                foreach (var r in sel)
+                {
+                    if (stopRequested) break;
+                    client.DeleteAttachment("test-instances", r.Inst.Id, r.Att);
+                    lock (deleted) deleted.Add(r);
+                }
+                Log(string.Format("Deleted {0} attachment(s) from ALM.", deleted.Count));
+            }, err => Log("ERROR: " + err), () => Ui(() =>
+            {
+                SetBusy(false);
+                almRows.RemoveAll(deleted.Contains);
+                FillAlmList();
+                OnAlmSelected();
+            }));
         }
 
         Control BuildTestsPanel()
@@ -532,7 +883,7 @@ namespace AlmImageUploader
             };
             p.Controls.Add(tree, 0, 2);
 
-            btnAssign = B("<  Assign selected images to ticked test cases", true);
+            btnAssign = B("<  Assign selected files to ticked test cases", true);
             btnAssign.Click += (s, e) => AssignSelectedTo(Targets());
             btnTickAll = B("Tick all");
             btnTickAll.Click += (s, e) => TickAllShown();
@@ -545,7 +896,7 @@ namespace AlmImageUploader
             lblTicked = new Label { AutoSize = true, Margin = new Padding(6, 9, 3, 3), ForeColor = SystemColors.GrayText };
             p.Controls.Add(Flow(btnAssign, btnTickAll, btnUntick, btnSetField, btnDownload, lblTicked), 0, 3);
 
-            lblCase = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 0), Text = "Images in the selected test case:" };
+            lblCase = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 0), Text = "Files in the selected test case:" };
             p.Controls.Add(lblCase, 0, 4);
             lstCaseImages = new ListBox { Dock = DockStyle.Fill, SelectionMode = SelectionMode.MultiExtended, IntegralHeight = false };
             p.Controls.Add(lstCaseImages, 0, 5);
@@ -616,7 +967,7 @@ namespace AlmImageUploader
                 var l = new TestLabFolder(client, labArg, cf == null ? new[] { "status" } : new[] { cf.Name, "status" });
                 if (cf != null) Log("Showing the '" + cf.Label + "' column of each test case, e.g. [NA].");
                 Log(string.Format("Found {0} test set(s) with {1} test case(s).", l.Sets.Count, l.InstanceCount));
-                var imgs = Util.ListImages(folder).Select(f => new ImageItem { File = f, Rel = Util.RelPath(folder, f) }).ToList();
+                var imgs = Util.ListFiles(folder).Select(f => new ImageItem { File = f, Rel = Util.RelPath(folder, f), IsImage = Util.HasImageExt(f) }).ToList();
                 AssignmentStore.Load(folder, domain, project, l, imgs);
                 int fromFolders = 0;
                 foreach (var img in imgs.Where(i => i.Assigned.Count == 0))
@@ -632,11 +983,11 @@ namespace AlmImageUploader
                     img.NameSuggestionWeak = weak;
                 }
                 ImageItem.RefreshSuggestions(imgs);
-                Log(string.Format("Found {0} image(s): {1} already assigned, {2} suggested, {3} maybe, {4} without a suggestion.",
-                    imgs.Count, imgs.Count(i => i.Assigned.Count > 0),
+                Log(string.Format("Found {0}: {1} already assigned, {2} suggested, {3} maybe, {4} without a suggestion.",
+                    imgs.Count(i => i.IsImage) + " image(s)" + (imgs.Any(i => !i.IsImage) ? " + " + imgs.Count(i => !i.IsImage) + " other file(s)" : ""), imgs.Count(i => i.Assigned.Count > 0),
                     imgs.Count(i => i.Suggestion != null && !i.SuggestWeak), imgs.Count(i => i.Suggestion != null && i.SuggestWeak),
                     imgs.Count(i => i.Assigned.Count == 0 && i.Suggestion == null)));
-                if (fromFolders > 0) Log(fromFolders + " image(s) assigned from their <test set>\\<test case> folder.");
+                if (fromFolders > 0) Log(fromFolders + " file(s) assigned from their <test set>\\<test case> folder.");
                 Ui(() =>
                 {
                     lab = l;
@@ -663,6 +1014,8 @@ namespace AlmImageUploader
         void ClearLoaded()
         {
             lab = null;
+            almRows = new List<AlmRow>();
+            if (lvAlm != null) { lvAlm.Items.Clear(); lblAlmInfo.Text = ""; SetAlmPicture(null); }
             commentField = null;
             images = new List<ImageItem>();
             ticked.Clear();
@@ -678,7 +1031,8 @@ namespace AlmImageUploader
         void EnableAssignUi(bool on)
         {
             foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnTickAll, btnSetField, btnDownload,
-                                              btnSelectAll, btnDeselectAll, btnExport, btnImport })
+                                              btnSelectAll, btnDeselectAll, btnExport, btnImport,
+                                              btnAlmRefresh, btnAlmDownload, btnAlmCopy, btnAlmDelete, btnAlmOpen })
                 c.Enabled = on;
         }
 
@@ -736,7 +1090,7 @@ namespace AlmImageUploader
             var rows = new List<ListViewItem>();
             foreach (var img in images)
             {
-                if (!ImageFilter(img)) continue;
+                if (!InCurrentList(img) || !ImageFilter(img)) continue;
                 if (q != "" && !Util.Norm(img.Rel).Contains(q)) continue;
                 var it = new ListViewItem(new[] { img.Rel, "", "" }) { Tag = img };
                 FillImageItem(it);
@@ -754,10 +1108,12 @@ namespace AlmImageUploader
                 return imgSortDesc ? -c : c;
             });
             lvImages.Items.AddRange(rows.ToArray());
-            lblImagesTitle.Text = rows.Count == images.Count ? string.Format("Images ({0})", images.Count)
-                                                             : string.Format("Images  (showing {0} of {1})", rows.Count, images.Count);
+            int kind = images.Count(InCurrentList);
+            var what = leftMode == LeftMode.Files ? "Other files" : "Images";
+            lblImagesTitle.Text = rows.Count == kind ? string.Format("{0} ({1})", what, kind)
+                                                     : string.Format("{0}  (showing {1} of {2})", what, rows.Count, kind);
             foreach (var it in rows) if (selected.Contains((ImageItem)it.Tag)) it.Selected = true;
-            string[] titles = { "Image", "Test case (assigned / suggested)", "Status" };
+            string[] titles = { leftMode == LeftMode.Files ? "File" : "Image", "Test case (assigned / suggested)", "Status" };
             for (int c = 0; c < titles.Length; c++)
                 lvImages.Columns[c].Text = titles[c] + (c == imgSortCol ? (imgSortDesc ? "  \u25BC" : "  \u25B2") : "");
             lvImages.EndUpdate();
@@ -807,8 +1163,11 @@ namespace AlmImageUploader
 
         string NodeText(TestInstance inst)
         {
-            int n = CountFor(inst);
-            var text = n == 0 ? inst.Label : string.Format("{0}   ({1} image{2})", inst.Label, n, n == 1 ? "" : "s");
+            int pics = images.Count(i => i.IsImage && i.Assigned.Contains(inst)), files = images.Count(i => !i.IsImage && i.Assigned.Contains(inst));
+            var parts = new List<string>();
+            if (pics > 0) parts.Add(pics + (pics == 1 ? " image" : " images"));
+            if (files > 0) parts.Add(files + (files == 1 ? " file" : " files"));
+            var text = parts.Count == 0 ? inst.Label : string.Format("{0}   ({1})", inst.Label, string.Join(", ", parts));
             var c = Comment(inst);
             if (c != "") text += "   [" + c + "]";
             var st = Status(inst);
@@ -825,7 +1184,7 @@ namespace AlmImageUploader
         {
             int n = ts.Instances.Count(i => CountFor(i) > 0);
             int na = ts.Instances.Count(IsNA);
-            return string.Format("{0}   ({1}/{2} test cases have images{3})", ts.PathText, n, ts.Instances.Count,
+            return string.Format("{0}   ({1}/{2} test cases have files{3})", ts.PathText, n, ts.Instances.Count,
                                  na > 0 ? ",  " + na + " NA" : "");
         }
 
@@ -974,9 +1333,10 @@ namespace AlmImageUploader
             int uploaded = images.Sum(i => i.Uploaded.Count(id => i.Assigned.Any(a => a.Id == id)));
             int cases = lab.Sets.Sum(s => s.Instances.Count(inst => CountFor(inst) > 0));
             int na = lab.Sets.Sum(s => s.Instances.Count(IsNA));
+            int pics = images.Count(i => i.IsImage), others = images.Count - pics;
             lblSummary.Text = string.Format(
-                "{0} images:  {1} assigned,  {2} not assigned.     {3} of {4} test cases have images{7}.     {5} of {6} attachments uploaded.",
-                images.Count, assigned, images.Count - assigned, cases, lab.InstanceCount, uploaded, pairs,
+                "{0}:  {1} assigned,  {2} not assigned.     {3} of {4} test cases have files{7}.     {5} of {6} attachments uploaded.",
+                pics + " images" + (others > 0 ? " + " + others + " other files" : ""), assigned, images.Count - assigned, cases, lab.InstanceCount, uploaded, pairs,
                 na > 0 ? ",  " + na + " are NA" : "");
         }
 
@@ -986,15 +1346,64 @@ namespace AlmImageUploader
             if (sel.Count != 1)
             {
                 SetPreview(null);
-                lblPreview.Text = sel.Count > 1 ? sel.Count + " images selected" : "";
+                ShowFileInfo(null);
+                lblPreview.Text = sel.Count > 1 ? sel.Count + (leftMode == LeftMode.Files ? " files selected" : " images selected") : "";
                 return;
             }
             var img = sel[0];
-            SetPreview(img.File);
+            if (img.IsImage) { ShowFileInfo(null); SetPreview(img.File); }
+            else { SetPreview(null); ShowFileInfo(img.File); }
             lblPreview.Text = img.Rel + (img.Assigned.Count == 0 ? ""
                 : img.Assigned.Count <= 3 ? "   ->   " + string.Join(";  ", img.Assigned.Select(i => CaseText(lab, i)))
                 : "   ->   assigned to " + img.Assigned.Count + " test cases");
             // the tree selection is left alone: it may be the target the user picked for "Assign"
+        }
+
+        static string FileSize(long bytes)
+        {
+            if (bytes < 0) return "";
+            if (bytes < 1024) return bytes + " bytes";
+            if (bytes < 1024 * 1024) return (bytes / 1024.0).ToString("0.#") + " KB";
+            return (bytes / 1024.0 / 1024.0).ToString("0.#") + " MB";
+        }
+
+        static string Kind(string name)
+        {
+            switch (Path.GetExtension(name).ToLowerInvariant())
+            {
+                case ".xlsx": case ".xls": case ".xlsm": case ".csv": return "Excel / spreadsheet";
+                case ".docx": case ".doc": return "Word document";
+                case ".pdf": return "PDF";
+                case ".pptx": case ".ppt": return "PowerPoint";
+                case ".txt": case ".log": return "Text / log";
+                case ".mp4": case ".mov": case ".avi": case ".wmv": case ".mkv": return "Video";
+                case ".zip": case ".7z": case ".rar": return "Archive";
+                case ".har": case ".json": case ".xml": return "Data (" + Path.GetExtension(name).TrimStart('.') + ")";
+                default: return Path.GetExtension(name) == "" ? "File" : Path.GetExtension(name).TrimStart('.').ToUpperInvariant() + " file";
+            }
+        }
+
+        /// The info box shown instead of a picture for other files (null hides it).
+        void ShowFileInfo(string file)
+        {
+            var info = lblFileInfo.Parent;
+            info.Visible = file != null;
+            picPreview.Visible = file == null;
+            if (file == null) return;
+            try
+            {
+                var fi = new FileInfo(file);
+                lblFileInfo.Text = string.Format("{0}\n\nType:   {1}\nSize:    {2}\nDate:    {3:yyyy-MM-dd HH:mm}\nFolder: {4}",
+                    fi.Name, Kind(fi.Name), FileSize(fi.Length), fi.LastWriteTime, fi.DirectoryName);
+            }
+            catch (IOException e) { lblFileInfo.Text = file + "\n\n" + e.Message; }
+            info.BringToFront();
+        }
+
+        void OpenWithWindows(string file)
+        {
+            try { System.Diagnostics.Process.Start(file); }
+            catch (Exception e) { Say("Could not open " + Path.GetFileName(file) + ":\n" + e.Message, true); }
         }
 
         void SetPreview(string file)
@@ -1019,10 +1428,10 @@ namespace AlmImageUploader
             var inst = tree.SelectedNode == null ? null : tree.SelectedNode.Tag as TestInstance;
             if (inst == null)
             {
-                lblCase.Text = "Images in the selected test case:";
+                lblCase.Text = "Files in the selected test case:";
                 return;
             }
-            lblCase.Text = "Images in  " + CaseText(lab, inst) + "  (test case ID " + inst.Id + "):";
+            lblCase.Text = "Files in  " + CaseText(lab, inst) + "  (test case ID " + inst.Id + "):";
             foreach (var img in images.Where(i => i.Assigned.Contains(inst)))
                 lstCaseImages.Items.Add(new CaseImage { Image = img, Uploaded = img.Uploaded.Contains(inst.Id) });
         }
@@ -1052,7 +1461,7 @@ namespace AlmImageUploader
             var sel = SelectedImages();
             if (sel.Count == 0) { Say("Select one or more images on the left first."); return; }
             if (targets.Count == 0) { Say("Tick the test cases or test sets on the right first (or select one)."); return; }
-            if (targets.Count > 1 && !Confirm(string.Format("Assign {0} image(s) to each of {1} test cases?", sel.Count, targets.Count)))
+            if (targets.Count > 1 && !Confirm(string.Format("Assign {0} file(s) to each of {1} test cases?", sel.Count, targets.Count)))
                 return;
             Assign(sel, targets);
         }
@@ -1064,18 +1473,20 @@ namespace AlmImageUploader
                 foreach (var img in imgs.Where(i => !i.Assigned.Contains(inst)))
                     img.Assigned.Add(inst);
             Log(targets.Count == 1
-                ? string.Format("Assigned {0} image(s) to {1}", imgs.Count, CaseText(lab, targets[0]))
-                : string.Format("Assigned {0} image(s) to each of {1} test cases", imgs.Count, targets.Count));
+                ? string.Format("Assigned {0} file(s) to {1}", imgs.Count, CaseText(lab, targets[0]))
+                : string.Format("Assigned {0} file(s) to each of {1} test cases", imgs.Count, targets.Count));
             AfterChange(imgs);
         }
 
         void ClearAllAssignments()
         {
             if (Busy()) return;
-            int n = images.Sum(i => i.Assigned.Count(a => !i.Uploaded.Contains(a.Id)));
-            if (n == 0) { Say("There are no assignments waiting for upload."); return; }
-            if (!Confirm(string.Format("Remove all {0} assignment(s) that are not uploaded yet?", n))) return;
-            foreach (var img in images) img.Assigned.RemoveAll(a => !img.Uploaded.Contains(a.Id));
+            var list = images.Where(InCurrentList).ToList();
+            var what = leftMode == LeftMode.Files ? "other files" : "images";
+            int n = list.Sum(i => i.Assigned.Count(a => !i.Uploaded.Contains(a.Id)));
+            if (n == 0) { Say("There are no assignments of " + what + " waiting for upload."); return; }
+            if (!Confirm(string.Format("Remove all {0} assignment(s) of {1} that are not uploaded yet?", n, what))) return;
+            foreach (var img in list) img.Assigned.RemoveAll(a => !img.Uploaded.Contains(a.Id));
             Log(string.Format("Cleared {0} assignment(s).", n));
             AfterChange(images);
         }
@@ -1200,7 +1611,7 @@ namespace AlmImageUploader
             var sel = SelectedImages().Where(i => i.Assigned.Count == 0 && i.Suggestion != null).ToList();
             if (sel.Count == 0) { Say("Select images that show a 'suggest' or 'maybe' test case first."); return; }
             foreach (var img in sel) img.Assigned.AddRange(img.Suggested);
-            Log(string.Format("Accepted the suggestion for {0} image(s).", sel.Count));
+            Log(string.Format("Accepted the suggestion for {0} file(s).", sel.Count));
             AfterChange(sel);
         }
 
@@ -1252,7 +1663,7 @@ namespace AlmImageUploader
                                                              .Select(i => new KeyValuePair<ImageItem, TestInstance>(img, i))).ToList();
             if (todo.Count == 0) { Say("Nothing to upload: assign images to test cases first."); return; }
             int cases = todo.Select(p => p.Value).Distinct().Count();
-            var q = string.Format("Upload {0} image attachment(s) to {1} test case(s) in ALM?", todo.Count, cases);
+            var q = string.Format("Upload {0} attachment(s) to {1} test case(s) in ALM?", todo.Count, cases);
             if (!Confirm(q)) return;
             stopRequested = false;
             SetBusy(true);

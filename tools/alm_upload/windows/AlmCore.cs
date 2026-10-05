@@ -371,6 +371,15 @@ namespace AlmImageUploader
             return names;
         }
 
+        /// Removes one attachment from an entity (by name, else by the attachment's id).
+        public void DeleteAttachment(string entity, string id, Attachment att)
+        {
+            var r = Send("DELETE", Rest(entity) + "/" + id + "/attachments/" + Uri.EscapeDataString(att.Name), null, null, null, true);
+            if ((r.Status == 404 || r.Status == 400 || r.Status == 405) && att.Id != "")
+                r = Send("DELETE", Rest("attachments") + "/" + att.Id, null, null, null, true);
+            Check(r, "delete " + att.Name);
+        }
+
         public void UploadAttachment(string entity, string id, string path, string name)
         {
             UploadAttachment(entity, id, File.ReadAllBytes(path), name);
@@ -485,6 +494,26 @@ namespace AlmImageUploader
         public static bool IsImage(string path)
         {
             return File.Exists(path) && ImageExts.Contains(Path.GetExtension(path).ToLowerInvariant());
+        }
+
+        /// Every file in the folder tree except system / temporary files and the program's own.
+        public static List<string> ListFiles(string folder)
+        {
+            return Directory.GetFiles(folder, "*", SearchOption.AllDirectories)
+                            .Where(p =>
+                            {
+                                var name = Path.GetFileName(p);
+                                return !name.StartsWith("~$") && !name.StartsWith(".")
+                                       && !name.Equals("Thumbs.db", StringComparison.OrdinalIgnoreCase)
+                                       && !name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase)
+                                       && !name.Equals(AssignmentStore.FileName, StringComparison.OrdinalIgnoreCase);
+                            })
+                            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        public static bool HasImageExt(string path)
+        {
+            return ImageExts.Contains(Path.GetExtension(path).ToLowerInvariant());
         }
 
         public static List<string> ListImages(string folder)
@@ -978,6 +1007,7 @@ namespace AlmImageUploader
     public class ImageItem
     {
         public string File, Rel;
+        public bool IsImage = true;          // false: another file (Excel, PDF, ...) shown on the Attachments tab
         public readonly List<TestInstance> Assigned = new List<TestInstance>();
         public readonly HashSet<string> Uploaded = new HashSet<string>();   // test instance ids
 

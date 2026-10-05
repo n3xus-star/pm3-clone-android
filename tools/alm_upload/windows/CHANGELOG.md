@@ -1,5 +1,17 @@
 # ALM Image Uploader - changelog
 
+## 2.6.0
+- The left side has two tabs: "Images" (as before) and "Attachments", which has two views:
+  - "In the image folder": the other files of the folder (Excel, PDF, Word, logs, videos,
+    ...), assigned and uploaded like images (tick many test cases, suggestions, upload);
+    instead of a picture it shows the file's type, size and date, with "Open file";
+  - "In ALM": the attachments already on the ticked test cases (or the selected test set /
+    test case) with picture preview, Open, Download (as <test set>\<test case>\file),
+    "Copy to ticked test cases" (same names skipped) and "Delete from ALM" (asks first and
+    lists every file).
+- The summary and the test tree count images and other files separately; the upload
+  button is now "Upload assigned files".
+
 ## 2.5.0
 - Export results now includes the attachments of every test case (ticked by default):
   - Excel: saved in the folder "<file name> - attachments\<test set>\<test case>\" next to
