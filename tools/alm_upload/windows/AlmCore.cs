@@ -858,16 +858,22 @@ namespace AlmImageUploader
             return null;
         }
 
+        /// A file directly in a test set folder: "<test case>_1.png", or "<test set>_<test case>_1.png"
+        /// as saved by Download attachments with one folder per test set.
         static TestInstance FindByFileName(TestSet ts, string fileName, out string error)
         {
-            var stem = Util.Norm(Path.GetFileNameWithoutExtension(fileName));
+            var full = Util.Norm(Path.GetFileNameWithoutExtension(fileName));
+            var setKey = Util.Norm(ts.Name);
+            var stems = new List<string> { full };
+            if (setKey != "" && full.StartsWith(setKey + " ")) stems.Add(full.Substring(setKey.Length + 1));
             TestInstance best = null;
+            string stem = full;
             foreach (var i in ts.Instances)
             {
                 var key = Util.Norm(i.Label);
-                if (key != "" && (stem == key || stem.StartsWith(key + " ")) &&
-                    (best == null || key.Length > Util.Norm(best.Label).Length))
-                    best = i;
+                if (key == "" || (best != null && key.Length <= Util.Norm(best.Label).Length)) continue;
+                foreach (var st in stems)
+                    if (st == key || st.StartsWith(key + " ")) { best = i; stem = st; break; }
             }
             if (best == null)
             {

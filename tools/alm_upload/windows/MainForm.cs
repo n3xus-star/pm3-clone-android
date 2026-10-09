@@ -2027,9 +2027,12 @@ namespace AlmImageUploader
     }
 
     /// Downloads the attachments of many test cases into <folder>\<test set>\<test case>\,
-    /// the same layout "Load" understands, so the files can be uploaded again as they are.
+    /// or (images only) flat into <folder>\<test set>\<test set>_<test case>_1.png.
+    /// "Load" understands both layouts, so the files can be uploaded again as they are.
     public class DownloadDialog : Form
     {
+        public const string LayoutCases = "<test set>\\<test case>\\<file>      (one folder per test case)";
+        public const string LayoutSets = "<test set>\\<test set>_<test case>_1.png      (images only, one folder per test set)";
         public const string NameNumbered = "Test case name + number      e.g. 1.1_Land_Screen_1.png";
         public const string NameBoth = "Test case name + original name      e.g. 1.1_Land_Screen - Title 12.png";
         public const string NameOriginal = "Original name      e.g. Title 12.png";
@@ -2038,10 +2041,10 @@ namespace AlmImageUploader
         readonly TestLabFolder lab;
         readonly List<TestInstance> targets;
         protected readonly TextBox txtDest, txtLog;
-        protected readonly ComboBox cboNaming;
+        protected readonly ComboBox cboNaming, cboLayout;
         protected readonly CheckBox chkImagesOnly, chkSkipExisting;
         readonly Button btnGo, btnStop, btnOpen;
-        readonly Label lblProgress;
+        readonly Label lblProgress, lblLayout;
         Thread worker;
         volatile bool stop;
 
@@ -2081,26 +2084,28 @@ namespace AlmImageUploader
                     if (d.ShowDialog(this) == DialogResult.OK) txtDest.Text = d.SelectedPath;
             };
             t.Controls.Add(browse, 2, 1);
-            t.Controls.Add(new Label { Text = "File names", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 2);
+            t.Controls.Add(new Label { Text = "Folders", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 2);
+            cboLayout = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+            cboLayout.Items.AddRange(new object[] { LayoutCases, LayoutSets });
+            cboLayout.SelectedIndex = 0;
+            t.Controls.Add(cboLayout, 1, 2);
+            t.SetColumnSpan(cboLayout, 2);
+            t.Controls.Add(new Label { Text = "File names", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 3);
             cboNaming = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
             cboNaming.Items.AddRange(new object[] { NameNumbered, NameBoth, NameOriginal });
             cboNaming.SelectedIndex = 0;
-            t.Controls.Add(cboNaming, 1, 2);
+            t.Controls.Add(cboNaming, 1, 3);
             t.SetColumnSpan(cboNaming, 2);
             chkImagesOnly = new CheckBox { Text = "Images only (png, jpg, gif, bmp, tif, webp)", AutoSize = true, Checked = true };
             chkSkipExisting = new CheckBox { Text = "Skip files that already exist (to continue an earlier download)", AutoSize = true, Checked = true };
-            t.Controls.Add(chkImagesOnly, 1, 3);
+            t.Controls.Add(chkImagesOnly, 1, 4);
             t.SetColumnSpan(chkImagesOnly, 2);
-            t.Controls.Add(chkSkipExisting, 1, 4);
+            t.Controls.Add(chkSkipExisting, 1, 5);
             t.SetColumnSpan(chkSkipExisting, 2);
-            var layout = new Label
-            {
-                AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 6, 3, 6), MaximumSize = new Size(540, 0),
-                Text = "Saved as  <Save to>\\<test set>\\<test case>\\<file>.  Choose that folder as the image folder and press Load: "
-                     + "every file is assigned to its test case again, ready to upload.",
-            };
-            t.Controls.Add(layout, 1, 5);
-            t.SetColumnSpan(layout, 2);
+            lblLayout = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 6, 3, 6), MaximumSize = new Size(540, 0) };
+            t.Controls.Add(lblLayout, 1, 6);
+            t.SetColumnSpan(lblLayout, 2);
+            cboLayout.SelectedIndexChanged += (s, e) => OnLayoutChanged();
             var row = new FlowLayoutPanel { AutoSize = true };
             btnGo = new Button { Text = "Download", AutoSize = true };
             btnGo.Font = new Font(btnGo.Font, FontStyle.Bold);
@@ -2113,17 +2118,32 @@ namespace AlmImageUploader
             row.Controls.AddRange(new Control[] { btnGo, btnStop, btnOpen, close });
             lblProgress = new Label { AutoSize = true, Margin = new Padding(8, 9, 3, 3) };
             row.Controls.Add(lblProgress);
-            t.Controls.Add(row, 1, 6);
+            t.Controls.Add(row, 1, 7);
             t.SetColumnSpan(row, 2);
             txtLog = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, BackColor = SystemColors.Window };
-            t.Controls.Add(txtLog, 0, 7);
+            t.Controls.Add(txtLog, 0, 8);
             t.SetColumnSpan(txtLog, 3);
-            t.RowCount = 8;
-            for (int i = 0; i < 7; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.RowCount = 9;
+            for (int i = 0; i < 8; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             Controls.Add(t);
             CancelButton = close;
             FormClosing += (s, e) => { if (worker != null && worker.IsAlive) { stop = true; e.Cancel = true; } };
+            OnLayoutChanged();
+        }
+
+        bool PerSet { get { return (string)cboLayout.SelectedItem == LayoutSets; } }
+
+        void OnLayoutChanged()
+        {
+            bool perSet = PerSet;
+            if (perSet) chkImagesOnly.Checked = true;
+            chkImagesOnly.Enabled = cboNaming.Enabled = !perSet;
+            lblLayout.Text = perSet
+                ? "Saved as  <Save to>\\<test set>\\<test set>_<test case>_1.png  (no test case folders).  Choose that folder as "
+                  + "the image folder and press Load: every image is assigned to its test case again, ready to upload."
+                : "Saved as  <Save to>\\<test set>\\<test case>\\<file>.  Choose that folder as the image folder and press Load: "
+                  + "every file is assigned to its test case again, ready to upload.";
         }
 
         void Ui(Action a)
@@ -2144,14 +2164,21 @@ namespace AlmImageUploader
             return label + "_" + n + ext;
         }
 
+        /// File name for the n-th image of a test case saved directly in its test set folder.
+        public static string SetFileName(TestSet ts, TestInstance inst, string original, int n)
+        {
+            return Util.SafeFolderName(ts.Name) + "_" + Util.SafeFolderName(inst.Label) + "_" + n + Path.GetExtension(original);
+        }
+
         protected void StartDownload()
         {
             var dest = Destination;
             if (dest == "") return;
             string naming = (string)cboNaming.SelectedItem;
-            bool imagesOnly = chkImagesOnly.Checked, skipExisting = chkSkipExisting.Checked;
+            bool perSet = PerSet;
+            bool imagesOnly = perSet || chkImagesOnly.Checked, skipExisting = chkSkipExisting.Checked;
             stop = false;
-            btnGo.Enabled = btnOpen.Enabled = false;
+            btnGo.Enabled = btnOpen.Enabled = cboLayout.Enabled = cboNaming.Enabled = chkImagesOnly.Enabled = false;
             btnStop.Enabled = true;
             int files = 0, skipped = 0, failed = 0, cases = 0;
             worker = new Thread(() =>
@@ -2173,13 +2200,14 @@ namespace AlmImageUploader
                                              .ToList();
                             if (atts.Count == 0) continue;
                             var dir = lab.LocalSetPath(ts).Aggregate(dest, (acc, part) => Path.Combine(acc, Util.SafeFolderName(part)));
-                            dir = Path.Combine(dir, Util.SafeFolderName(inst.Label));
+                            if (!perSet) dir = Path.Combine(dir, Util.SafeFolderName(inst.Label));
                             Directory.CreateDirectory(dir);
                             int got = 0, n = 0;
                             foreach (var att in atts)
                             {
                                 if (stop) break;
-                                var path = Path.Combine(dir, FileName(naming, inst, att.Name, ++n));
+                                ++n;
+                                var path = Path.Combine(dir, perSet ? SetFileName(ts, inst, att.Name, n) : FileName(naming, inst, att.Name, n));
                                 if (skipExisting && File.Exists(path)) { skipped++; continue; }
                                 try
                                 {
@@ -2212,8 +2240,9 @@ namespace AlmImageUploader
                 {
                     Ui(() =>
                     {
-                        btnGo.Enabled = btnOpen.Enabled = true;
+                        btnGo.Enabled = btnOpen.Enabled = cboLayout.Enabled = true;
                         btnStop.Enabled = false;
+                        OnLayoutChanged();
                         lblProgress.Text = string.Format("{0} file(s) saved", files);
                     });
                 }

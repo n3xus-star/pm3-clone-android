@@ -1,5 +1,11 @@
 # ALM Image Uploader - changelog
 
+## 2.7.0
+- Download attachments: new "Folders" choice "<test set>\<test set>_<test case>_1.png"
+  (images only, one folder per test set, no test case folders). Each image is named after
+  its test set and test case. Loading that folder assigns every image to its test case
+  again, ready to upload.
+
 ## 2.6.0
 - The left side has two tabs: "Images" (as before) and "Attachments", which has two views:
   - "In the image folder": the other files of the folder (Excel, PDF, Word, logs, videos,
