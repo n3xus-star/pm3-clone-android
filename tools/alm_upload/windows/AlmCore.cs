@@ -779,6 +779,13 @@ namespace AlmImageUploader
             return nameIndex[Util.Norm(ts.Name)].Count == 1 ? new List<string> { ts.Name } : ts.Path;
         }
 
+        /// File name start for a test set when every image sits in one folder: its name, or its
+        /// folder path joined with "_" when another test set has the same name.
+        public string FlatPrefix(TestSet ts)
+        {
+            return string.Join("_", LocalSetPath(ts).Select(Util.SafeFolderName));
+        }
+
         public int MakeFolders(string imageRoot)
         {
             int made = 0;
@@ -804,11 +811,7 @@ namespace AlmImageUploader
             var item = new PlanItem { File = file };
             var parts = Util.RelPath(imageRoot, file).Split(Path.DirectorySeparatorChar);
             var dirs = parts.Take(parts.Length - 1).ToList();
-            if (dirs.Count == 0)
-            {
-                item.Error = "image must be inside a <test set>\\<test case> folder";
-                return item;
-            }
+            if (dirs.Count == 0) return ResolveFlat(item, parts[0]);
             for (int k = dirs.Count; k > 0; k--)
             {
                 TestSet exact;
@@ -827,7 +830,7 @@ namespace AlmImageUploader
                 item.Set = sets[0];
                 string err;
                 item.Instance = k < dirs.Count ? FindInstance(item.Set, dirs[k], out err)
-                                               : FindByFileName(item.Set, parts[parts.Length - 1], out err);
+                                               : FindByFileName(item.Set, parts[parts.Length - 1], Util.Norm(item.Set.Name), out err);
                 item.Error = err;
                 return item;
             }
@@ -858,12 +861,33 @@ namespace AlmImageUploader
             return null;
         }
 
+        /// A file directly in the image folder named "<test set>_<test case>_1.png", as saved by
+        /// Download attachments with all images in one folder.
+        PlanItem ResolveFlat(PlanItem item, string fileName)
+        {
+            var stem = Util.Norm(Path.GetFileNameWithoutExtension(fileName));
+            var sets = Sets.Select(ts => new { Set = ts, Key = Util.Norm(FlatPrefix(ts)) })
+                           .Where(x => x.Key != "" && stem.StartsWith(x.Key + " "))
+                           .OrderByDescending(x => x.Key.Length);
+            foreach (var x in sets)
+            {
+                string err;
+                var inst = FindByFileName(x.Set, fileName, x.Key, out err);
+                if (inst == null && !err.StartsWith("put it")) { item.Set = x.Set; item.Error = err; return item; }
+                if (inst == null) continue;
+                item.Set = x.Set;
+                item.Instance = inst;
+                return item;
+            }
+            item.Error = "image must be inside a <test set>\\<test case> folder, or be named <test set>_<test case>";
+            return item;
+        }
+
         /// A file directly in a test set folder: "<test case>_1.png", or "<test set>_<test case>_1.png"
         /// as saved by Download attachments with one folder per test set.
-        static TestInstance FindByFileName(TestSet ts, string fileName, out string error)
+        static TestInstance FindByFileName(TestSet ts, string fileName, string setKey, out string error)
         {
             var full = Util.Norm(Path.GetFileNameWithoutExtension(fileName));
-            var setKey = Util.Norm(ts.Name);
             var stems = new List<string> { full };
             if (setKey != "" && full.StartsWith(setKey + " ")) stems.Add(full.Substring(setKey.Length + 1));
             TestInstance best = null;

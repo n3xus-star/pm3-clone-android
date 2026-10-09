@@ -2027,12 +2027,14 @@ namespace AlmImageUploader
     }
 
     /// Downloads the attachments of many test cases into <folder>\<test set>\<test case>\,
-    /// or (images only) flat into <folder>\<test set>\<test set>_<test case>_1.png.
+    /// or (images only) into <folder>\<test set>\<test set>_<test case>_1.png or all into
+    /// <folder>\<test set>_<test case>_1.png.
     /// "Load" understands both layouts, so the files can be uploaded again as they are.
     public class DownloadDialog : Form
     {
         public const string LayoutCases = "<test set>\\<test case>\\<file>      (one folder per test case)";
         public const string LayoutSets = "<test set>\\<test set>_<test case>_1.png      (images only, one folder per test set)";
+        public const string LayoutFlat = "<test set>_<test case>_1.png      (images only, all in one folder, no sub folders)";
         public const string NameNumbered = "Test case name + number      e.g. 1.1_Land_Screen_1.png";
         public const string NameBoth = "Test case name + original name      e.g. 1.1_Land_Screen - Title 12.png";
         public const string NameOriginal = "Original name      e.g. Title 12.png";
@@ -2086,7 +2088,7 @@ namespace AlmImageUploader
             t.Controls.Add(browse, 2, 1);
             t.Controls.Add(new Label { Text = "Folders", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 2);
             cboLayout = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-            cboLayout.Items.AddRange(new object[] { LayoutCases, LayoutSets });
+            cboLayout.Items.AddRange(new object[] { LayoutCases, LayoutSets, LayoutFlat });
             cboLayout.SelectedIndex = 0;
             t.Controls.Add(cboLayout, 1, 2);
             t.SetColumnSpan(cboLayout, 2);
@@ -2133,13 +2135,17 @@ namespace AlmImageUploader
         }
 
         bool PerSet { get { return (string)cboLayout.SelectedItem == LayoutSets; } }
+        bool Flat { get { return (string)cboLayout.SelectedItem == LayoutFlat; } }
 
         void OnLayoutChanged()
         {
-            bool perSet = PerSet;
-            if (perSet) chkImagesOnly.Checked = true;
-            chkImagesOnly.Enabled = cboNaming.Enabled = !perSet;
-            lblLayout.Text = perSet
+            bool fixedNames = PerSet || Flat;
+            if (fixedNames) chkImagesOnly.Checked = true;
+            chkImagesOnly.Enabled = cboNaming.Enabled = !fixedNames;
+            lblLayout.Text = Flat
+                ? "Saved as  <Save to>\\<test set>_<test case>_1.png  (every image in that one folder, no sub folders).  Choose "
+                  + "that folder as the image folder and press Load: every image is assigned to its test case again, ready to upload."
+                : PerSet
                 ? "Saved as  <Save to>\\<test set>\\<test set>_<test case>_1.png  (no test case folders).  Choose that folder as "
                   + "the image folder and press Load: every image is assigned to its test case again, ready to upload."
                 : "Saved as  <Save to>\\<test set>\\<test case>\\<file>.  Choose that folder as the image folder and press Load: "
@@ -2170,13 +2176,19 @@ namespace AlmImageUploader
             return Util.SafeFolderName(ts.Name) + "_" + Util.SafeFolderName(inst.Label) + "_" + n + Path.GetExtension(original);
         }
 
+        /// File name for the n-th image of a test case when every image goes into one folder.
+        public static string FlatFileName(TestLabFolder lab, TestSet ts, TestInstance inst, string original, int n)
+        {
+            return lab.FlatPrefix(ts) + "_" + Util.SafeFolderName(inst.Label) + "_" + n + Path.GetExtension(original);
+        }
+
         protected void StartDownload()
         {
             var dest = Destination;
             if (dest == "") return;
             string naming = (string)cboNaming.SelectedItem;
-            bool perSet = PerSet;
-            bool imagesOnly = perSet || chkImagesOnly.Checked, skipExisting = chkSkipExisting.Checked;
+            bool perSet = PerSet, flat = Flat;
+            bool imagesOnly = perSet || flat || chkImagesOnly.Checked, skipExisting = chkSkipExisting.Checked;
             stop = false;
             btnGo.Enabled = btnOpen.Enabled = cboLayout.Enabled = cboNaming.Enabled = chkImagesOnly.Enabled = false;
             btnStop.Enabled = true;
@@ -2199,15 +2211,15 @@ namespace AlmImageUploader
                                              .Where(a => !imagesOnly || Util.ImageExts.Contains(Path.GetExtension(a.Name).ToLowerInvariant()))
                                              .ToList();
                             if (atts.Count == 0) continue;
-                            var dir = lab.LocalSetPath(ts).Aggregate(dest, (acc, part) => Path.Combine(acc, Util.SafeFolderName(part)));
-                            if (!perSet) dir = Path.Combine(dir, Util.SafeFolderName(inst.Label));
+                            var dir = flat ? dest : lab.LocalSetPath(ts).Aggregate(dest, (acc, part) => Path.Combine(acc, Util.SafeFolderName(part)));
+                            if (!perSet && !flat) dir = Path.Combine(dir, Util.SafeFolderName(inst.Label));
                             Directory.CreateDirectory(dir);
                             int got = 0, n = 0;
                             foreach (var att in atts)
                             {
                                 if (stop) break;
                                 ++n;
-                                var path = Path.Combine(dir, perSet ? SetFileName(ts, inst, att.Name, n) : FileName(naming, inst, att.Name, n));
+                                var path = Path.Combine(dir, flat ? FlatFileName(lab, ts, inst, att.Name, n) : perSet ? SetFileName(ts, inst, att.Name, n) : FileName(naming, inst, att.Name, n));
                                 if (skipExisting && File.Exists(path)) { skipped++; continue; }
                                 try
                                 {

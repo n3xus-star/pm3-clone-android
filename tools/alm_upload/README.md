@@ -8,7 +8,7 @@ No Python and no installation needed: one `.exe` file.
 
 ## Windows program (single .exe, recommended)
 
-Current version: **2.7.0** (see `windows/CHANGELOG.md`).
+Current version: **2.8.0** (see `windows/CHANGELOG.md`).
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
@@ -35,7 +35,8 @@ nothing to install and no Python. It works step by step:
      `<folder>\<test set>\<test case>\<file>`, renamed after the test case
      (e.g. `1.1_Land_Screen_1.png`); loading that folder assigns every file to its
      test case again, ready to upload, or (images only) flat as
-     `<folder>\<test set>\<test set>_<test case>_1.png`, which loads the same way
+     `<folder>\<test set>\<test set>_<test case>_1.png`, or all in one folder as `<folder>\<test set>_<test case>_1.png`
+     (no sub folders); both load the same way
    - sort and filter both lists: click an image column title to sort (natural order,
      "1.9" before "1.10"), "Show" filters images by status; the test tree has "Sort"
      and "Show" (with / without images, ticked, waiting for upload, Comments value)

@@ -1,5 +1,11 @@
 # ALM Image Uploader - changelog
 
+## 2.8.0
+- Download attachments: third "Folders" choice "<test set>_<test case>_1.png" puts every
+  image in the chosen folder itself, with no sub folders at all. When two test sets share a
+  name, the file name starts with their folder path ("Smoke_Dup_Login Test_1.png").
+  Loading that folder assigns every image to its test case again.
+
 ## 2.7.0
 - Download attachments: new "Folders" choice "<test set>\<test set>_<test case>_1.png"
   (images only, one folder per test set, no test case folders). Each image is named after
