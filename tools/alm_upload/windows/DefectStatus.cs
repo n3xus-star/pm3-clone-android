@@ -22,6 +22,8 @@ namespace AlmImageUploader
         public string CommentNow = "", Result = "";
         public readonly List<string> FolderFiles = new List<string>();
         public readonly HashSet<string> UploadedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        /// Attachment names on the defect in ALM (null until read).
+        public HashSet<string> AttachNames;
         /// Linked entities that are not test cases in Test Lab, e.g. "test 501".
         public readonly List<string> LinkedTo = new List<string>();
         /// Values for this defect from the imported list, by field name, e.g. { "status": "Passed" }.
@@ -41,6 +43,8 @@ namespace AlmImageUploader
         public readonly Dictionary<string, string> New = new Dictionary<string, string>();
         public string Error, Result = "";
         public bool Ticked = true;
+        /// The test case's own attachments in ALM (null until read), to copy to its defects.
+        public List<AlmClient.Attachment> Atts;
         public readonly HashSet<string> UploadedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public string DefectIds { get { return string.Join(", ", Defects.Select(d => d.Id)); } }
@@ -521,7 +525,7 @@ namespace AlmImageUploader
         protected readonly Button btnFind, btnApply, btnStop, btnAdd, btnRemove, btnImportList, btnTickAll, btnUntickAll;
         protected readonly TextBox txtComment;
         protected readonly ListBox lstFiles;
-        protected readonly CheckBox chkFilesCases, chkFilesDefects;
+        protected readonly CheckBox chkFilesCases, chkFilesDefects, chkCopyFromCases, chkCopyImagesOnly;
         protected readonly Button btnAddFiles, btnFolder, btnRemoveFile;
         readonly Label lblSummary, lblList, lblFolder;
         bool filling, hadComment;
@@ -547,7 +551,7 @@ namespace AlmImageUploader
             this.client = client;
             this.lab = lab;
             Text = "Change test cases by defect";
-            ClientSize = new Size(1060, 820);
+            ClientSize = new Size(1060, 850);
             MaximizeBox = true;
 
             var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(10) };
@@ -659,9 +663,22 @@ namespace AlmImageUploader
                                                        chkFilesCases, chkFilesDefects });
             extra.Controls.Add(fileHead, 1, 0);
             extra.SetColumnSpan(fileHead, 2);
-            extra.RowCount = 2;
+            chkCopyFromCases = new CheckBox { Text = "Copy the test cases' own attachments to their defects", AutoSize = true, Margin = new Padding(3, 4, 0, 0) };
+            chkCopyImagesOnly = new CheckBox { Text = "images only", AutoSize = true, Margin = new Padding(10, 4, 0, 0), Enabled = false };
+            chkCopyFromCases.CheckedChanged += (s, e) =>
+            {
+                chkCopyImagesOnly.Enabled = chkCopyFromCases.Checked;
+                if (chkCopyFromCases.Checked && cases.Any(c => c.Atts == null)) LoadCaseAttachments(); else Fill();
+            };
+            chkCopyImagesOnly.CheckedChanged += (s, e) => Fill();
+            var copyRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+            copyRow.Controls.AddRange(new Control[] { chkCopyFromCases, chkCopyImagesOnly });
+            extra.Controls.Add(copyRow, 1, 2);
+            extra.SetColumnSpan(copyRow, 2);
+            extra.RowCount = 3;
             extra.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             extra.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            extra.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.Controls.Add(extra, 1, 4);
             t.SetColumnSpan(extra, 2);
 
@@ -722,7 +739,7 @@ namespace AlmImageUploader
             t.SetColumnSpan(txtLog, 3);
             t.RowCount = 10;
             for (int i = 0; i < 6; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            t.RowStyles[4] = new RowStyle(SizeType.Absolute, 140);   // comment / attachments: room for the three buttons
+            t.RowStyles[4] = new RowStyle(SizeType.Absolute, 168);   // comment / attachments: room for the three buttons
             t.RowStyles.Add(new RowStyle(SizeType.Percent, 75));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -896,6 +913,7 @@ namespace AlmImageUploader
             var fields = UsableFields().Select(f => f.Name).ToList();
             var lists = forAll.Select(kv => kv.Key).Concat(listFields).Where(f => f.ListId != "").Select(f => f.ListId).Distinct().ToList();
             List<DefectCase> found = null;
+            bool copyAtts = chkCopyFromCases.Checked;
             lblSummary.Text = string.Format("Reading {0} defect(s) and their links from ALM...", ids.Count);
             btnFind.Enabled = btnApply.Enabled = false;
             Run(() =>
@@ -909,6 +927,7 @@ namespace AlmImageUploader
                     lock (listValues) listValues[id] = vals;
                 }
                 found = DefectLinks.Find(client, wanted, fields, lab, Log, commentField);
+                if (copyAtts) ReadAttachments(found, wanted);
                 Log(string.Format("{0} defect(s): {1} test case(s) linked, {2} defect(s) with a problem.",
                                   wanted.Count, found.Count, wanted.Count(d => d.Problem != null)));
             }, () =>
@@ -1024,6 +1043,69 @@ namespace AlmImageUploader
             return Pending(allFiles.Concat(d.FolderFiles), d.UploadedFiles);
         }
 
+        // ------------------------------------------------------------ copy from test cases
+        /// Reads the attachments of the test cases and the attachment names of their defects.
+        void ReadAttachments(List<DefectCase> list, List<DefectInfo> defectList)
+        {
+            foreach (var c in list.Where(c => c.Atts == null))
+            {
+                try { c.Atts = client.GetAttachments("test-instances", c.Inst.Id); }
+                catch (AlmException e) { c.Atts = new List<AlmClient.Attachment>(); Log("Could not read the attachments of " + c.Inst.Label + ": " + e.Message); }
+            }
+            foreach (var d in defectList.Where(d => d.Found && d.AttachNames == null))
+            {
+                try { d.AttachNames = client.ListAttachmentNames("defects", d.Id); }
+                catch (AlmException e) { Log("Could not read the attachments of defect " + d.Id + ": " + e.Message); }
+            }
+            Log(string.Format("Read the attachments of {0} test case(s): {1} file(s).", list.Count, list.Sum(c => c.Atts.Count)));
+        }
+
+        void LoadCaseAttachments()
+        {
+            if (Busy || cases.Count == 0) return;
+            var list = cases;
+            var defectList = defects;
+            lblSummary.Text = "Reading the attachments of the test cases...";
+            btnApply.Enabled = btnFind.Enabled = false;
+            Run(() => ReadAttachments(list, defectList), () => Fill());
+        }
+
+        public class CopyItem
+        {
+            public DefectCase Case;
+            public AlmClient.Attachment Att;
+            public string Target;
+        }
+
+        /// Attachments of the ticked test cases of a defect that the defect does not have yet. When two
+        /// test cases have a file with the same name, the test case name goes in front of it.
+        protected List<CopyItem> CopyPlan(DefectInfo d)
+        {
+            var none = new List<CopyItem>();
+            if (!chkCopyFromCases.Checked || d.AttachNames == null) return none;
+            bool images = chkCopyImagesOnly.Checked;
+            var src = cases.Where(c => c.Ticked && c.Error == null && c.Atts != null && c.Defects.Contains(d))
+                           .SelectMany(c => c.Atts.Where(a => !images || Util.ImageExts.Contains(Path.GetExtension(a.Name).ToLowerInvariant()))
+                                                  .Select(a => new CopyItem { Case = c, Att = a }))
+                           .ToList();
+            var plan = new List<CopyItem>();
+            foreach (var g in src.GroupBy(x => x.Att.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                var perCase = g.GroupBy(x => x.Case).Select(cg => cg.First()).ToList();
+                foreach (var x in perCase)
+                    x.Target = perCase.Count == 1 ? x.Att.Name : Util.SafeFolderName(x.Case.Inst.Label) + " - " + x.Att.Name;
+                plan.AddRange(perCase);
+            }
+            // test cases with the same name (e.g. another department's copy): number them
+            foreach (var g in plan.GroupBy(x => x.Target, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).ToList())
+            {
+                int k = 1;
+                foreach (var x in g.Skip(1))
+                    x.Target = Path.GetFileNameWithoutExtension(x.Target) + " (" + ++k + ")" + Path.GetExtension(x.Target);
+            }
+            return plan.Where(x => !d.AttachNames.Contains(x.Target)).ToList();
+        }
+
         string CommentText { get { return txtComment.Text.Trim(); } }
 
         bool CommentPending(DefectInfo d) { return CommentText != "" && !DefectLinks.HasComment(d.CommentNow, CommentText); }
@@ -1034,7 +1116,7 @@ namespace AlmImageUploader
             return d.Found && d.Problem == null && cases.Any(c => c.Ticked && c.Error == null && c.Defects.Contains(d));
         }
 
-        bool DefectWanted(DefectInfo d) { return DefectActive(d) && (CommentPending(d) || DefectFiles(d).Count > 0); }
+        bool DefectWanted(DefectInfo d) { return DefectActive(d) && (CommentPending(d) || DefectFiles(d).Count > 0 || CopyPlan(d).Count > 0); }
 
         string DefectText(DefectInfo d)
         {
@@ -1042,6 +1124,8 @@ namespace AlmImageUploader
             if (CommentPending(d)) parts.Add("comment");
             int n = DefectFiles(d).Count;
             if (n > 0) parts.Add(n + " file(s)");
+            int k = CopyPlan(d).Count;
+            if (k > 0) parts.Add(k + " from test cases");
             return parts.Count > 0 ? string.Join(" + ", parts) : d.Result;
         }
 
@@ -1087,7 +1171,7 @@ namespace AlmImageUploader
                                 : wanted ? "will change" : c.Ticked ? "no change" : "not ticked"),
                 }) { Tag = c, Checked = c.Ticked && c.Error == null };
                 it.ForeColor = problem ? Color.Firebrick : updated && !wanted ? Color.ForestGreen
-                             : wanted ? SystemColors.WindowText : SystemColors.GrayText;
+                             : wanted || (c.Ticked && c.Defects.Any(DefectWanted)) ? SystemColors.WindowText : SystemColors.GrayText;
                 lv.Items.Add(it);
             }
             lv.EndUpdate();
@@ -1104,7 +1188,7 @@ namespace AlmImageUploader
                 defectUpdates = defects.Count(DefectWanted);
             lblSummary.Text = string.Format("{0} defect(s), {1} linked test case(s):   {2} to change,   {6} defect(s) to update,   {3} with nothing to do,   {4} not ticked,   {5} problem(s) (red).",
                                             defects.Count, cases.Count, change, same, unticked, bad, defectUpdates)
-                              + (forAll.Count == 0 && !defects.Any(d => d.ListValues.Count > 0) && CommentText == "" && allFiles.Count == 0 && defectFolder == null
+                              + (forAll.Count == 0 && !defects.Any(d => d.ListValues.Count > 0) && CommentText == "" && allFiles.Count == 0 && defectFolder == null && !chkCopyFromCases.Checked
                                  ? "   Add a change in step 2 or a comment / files in step 3." : "");
             UpdateButtons();
         }
@@ -1132,6 +1216,7 @@ namespace AlmImageUploader
             var comment = CommentText;
             var defComment = defTodo.ToDictionary(d => d, CommentPending);
             var defFiles = defTodo.ToDictionary(d => d, DefectFiles);
+            var defCopy = defTodo.ToDictionary(d => d, CopyPlan);
             if (todo.Count == 0 && defTodo.Count == 0) return;
 
             int n = todo.Sum(c => c.New.Count), files = caseFiles.Values.Sum(l => l.Count);
@@ -1140,8 +1225,8 @@ namespace AlmImageUploader
             if (n > 0) what.Add(string.Format("write {0} field change(s) to {1} test case(s)", n, todo.Count(c => c.New.Count > 0)));
             if (files > 0) what.Add(string.Format("upload {0} file(s) to {1} test case(s)", files, caseFiles.Count(kv => kv.Value.Count > 0)));
             if (defTodo.Count > 0) what.Add(string.Format("update {0} defect(s)", defTodo.Count));
-            sb.Append("In ALM: " + string.Join(", ", what) + "?").AppendLine().AppendLine();
-            if (todo.Count > 0) sb.AppendLine("Test cases:");
+            sb.Append("In ALM: " + string.Join(", ", what) + "?").AppendLine();
+            if (todo.Count > 0) sb.AppendLine().AppendLine("Test cases:");
             foreach (var c in todo.Take(15))
                 sb.AppendLine("   Defect " + c.DefectIds + "  |  " + c.SetPath + "  >  " + c.Inst.Label + ":   " + ChangeText(c));
             if (todo.Count > 15) sb.AppendLine("   ... and " + (todo.Count - 15) + " more (see the list).");
@@ -1151,7 +1236,10 @@ namespace AlmImageUploader
                 foreach (var d in defTodo.Take(15))
                     sb.AppendLine("   Defect " + d.Id + " (" + d.Summary + "):   "
                                   + string.Join(",  ", new[] { defComment[d] ? "add a comment to " + commentLabel : null,
-                                                               defFiles[d].Count > 0 ? "upload " + defFiles[d].Count + " file(s)" : null }.Where(x => x != null)));
+                                                               defFiles[d].Count > 0 ? "upload " + defFiles[d].Count + " file(s)" : null,
+                                                               defCopy[d].Count > 0 ? "copy " + defCopy[d].Count + " attachment(s) from its test cases ("
+                                                                   + string.Join(", ", defCopy[d].Select(x => x.Target).Take(5)) + (defCopy[d].Count > 5 ? ", ..." : "") + ")" : null }
+                                                    .Where(x => x != null)));
                 if (defTodo.Count > 15) sb.AppendLine("   ... and " + (defTodo.Count - 15) + " more.");
             }
             if (defComment.Values.Any(x => x))
@@ -1234,6 +1322,31 @@ namespace AlmImageUploader
                         {
                             if (!(e is AlmException || e is WebException || e is IOException)) throw;
                             parts.Add("files FAILED: " + e.Message);
+                            bad = true;
+                        }
+                    }
+                    if (defCopy[d].Count > 0)
+                    {
+                        int copied = 0, skipped = 0;
+                        try
+                        {
+                            // names on the defect now (the files above are there too)
+                            var there = client.ListAttachmentNames("defects", d.Id);
+                            foreach (var x in defCopy[d])
+                            {
+                                if (stop) break;
+                                if (there.Contains(x.Target)) { skipped++; continue; }
+                                client.UploadAttachment("defects", d.Id, client.DownloadAttachment("test-instances", x.Case.Inst.Id, x.Att), x.Target);
+                                there.Add(x.Target);
+                                copied++;
+                            }
+                            d.AttachNames = there;
+                            parts.Add(copied + " copied from test cases" + (skipped > 0 ? ", " + skipped + " already there" : ""));
+                        }
+                        catch (Exception e)
+                        {
+                            if (!(e is AlmException || e is WebException || e is IOException)) throw;
+                            parts.Add((copied > 0 ? copied + " copied, then " : "") + "copy FAILED: " + e.Message);
                             bad = true;
                         }
                     }

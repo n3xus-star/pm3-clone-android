@@ -1,5 +1,12 @@
 # ALM Image Uploader - changelog
 
+## 2.11.0
+- Change by defect: "Copy the test cases' own attachments to their defects" (optionally
+  images only). The attachments already on the ticked test cases are copied to the defects
+  linked to them; names the defect already has are skipped, so it never copies twice. When
+  two test cases have a file with the same name, the test case name goes in front
+  ("1.1_Land_Screen - Step 2.jpg"), numbered if that is still the same.
+
 ## 2.10.0
 - Change by defect, new step "Comment & attachments":
   - a comment typed once is added to the Comments of every defect (under a line, with your
