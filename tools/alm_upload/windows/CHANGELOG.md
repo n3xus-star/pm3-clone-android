@@ -1,5 +1,18 @@
 # ALM Image Uploader - changelog
 
+## 2.10.0
+- Change by defect, new step "Comment & attachments":
+  - a comment typed once is added to the Comments of every defect (under a line, with your
+    user name and the date, like ALM does; what was there stays). The same comment is not
+    added twice.
+  - attachments: files for all, plus a "defect folder" whose sub folders are named after the
+    defect IDs (e.g. ...\3798\) with files for that defect only. They are uploaded to the
+    ticked test cases and/or to the defects ("upload to: test cases / defects"); names that
+    are already there are skipped.
+  - the list shows the files per test case and a "Defect update" column; the confirmation
+    lists the test cases, the defects, the comment and the file names.
+  - a defect is updated when at least one of its test cases is ticked.
+
 ## 2.9.1
 - Change by defect: fixed "HTTP 500 The source ids ... is not a comma separated list of
   numbers" on ALM 25.1. The links are now asked for as "{first-endpoint-id[1,2,3]}" (with

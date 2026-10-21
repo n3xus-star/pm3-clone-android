@@ -17,6 +17,11 @@ namespace AlmImageUploader
     {
         public string Id, Summary = "", Status = "", Problem, LinkError;
         public bool Found;
+        /// The defect's Comments now (HTML), what was done to it, and files for it alone
+        /// (from a "<defect folder>\<defect id>\" sub folder).
+        public string CommentNow = "", Result = "";
+        public readonly List<string> FolderFiles = new List<string>();
+        public readonly HashSet<string> UploadedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         /// Linked entities that are not test cases in Test Lab, e.g. "test 501".
         public readonly List<string> LinkedTo = new List<string>();
         /// Values for this defect from the imported list, by field name, e.g. { "status": "Passed" }.
@@ -36,6 +41,7 @@ namespace AlmImageUploader
         public readonly Dictionary<string, string> New = new Dictionary<string, string>();
         public string Error, Result = "";
         public bool Ticked = true;
+        public readonly HashSet<string> UploadedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public string DefectIds { get { return string.Join(", ", Defects.Select(d => d.Id)); } }
 
@@ -223,16 +229,18 @@ namespace AlmImageUploader
         /// Reads the defects, their links, and the test cases the links lead to (directly, or through a
         /// run / run step of the test case), with the current values of the given fields.
         public static List<DefectCase> Find(AlmClient client, List<DefectInfo> defects, IEnumerable<string> fields,
-                                            TestLabFolder lab, Action<string> log)
+                                            TestLabFolder lab, Action<string> log, string commentField = null)
         {
             var byId = defects.ToDictionary(d => d.Id);
-            foreach (var b in client.GetByIds("defects", "id", byId.Keys, new[] { "id", "name", "status" }))
+            var defectFields = new[] { "id", "name", "status" }.Concat(commentField != null ? new[] { commentField } : new string[0]).ToArray();
+            foreach (var b in client.GetByIds("defects", "id", byId.Keys, defectFields))
             {
                 DefectInfo d;
                 if (!byId.TryGetValue(Get(b, "id"), out d)) continue;
                 d.Found = true;
                 d.Summary = Get(b, "name");
                 d.Status = Get(b, "status");
+                if (commentField != null) d.CommentNow = Get(b, commentField);
             }
             var found = defects.Where(d => d.Found).ToList();
 
@@ -402,6 +410,73 @@ namespace AlmImageUploader
             }
         }
 
+        // ------------------------------------------------------------------ comments
+        /// Adds a comment under the defect's Comments the way ALM does: a line, then
+        /// "user, date:" and the text. What was there stays.
+        public static string AppendComment(string existing, string user, string text, DateTime when)
+        {
+            const string Font = "<font face=\"Arial\"{0}><span style=\"font-size:8pt\">{1}</span></font>";
+            var body = System.Security.SecurityElement.Escape(text.Trim()).Replace("\r\n", "\n").Replace("\n", "<br />");
+            var entry = "<div align=\"left\">" + string.Format(Font, "", "<br />")
+                      + string.Format(Font, " color=\"#000080\"", "<b>________________________________________</b>") + "</div>\n"
+                      + "<div align=\"left\">" + string.Format(Font, " color=\"#000080\"",
+                            "<b>" + System.Security.SecurityElement.Escape(user ?? "") + ", " + when.ToString("dd/MM/yyyy") + ":</b>")
+                      + string.Format(Font, "", " " + body) + "</div>\n";
+            existing = existing ?? "";
+            if (existing.Trim() == "") return "<html><body>\n" + entry + "</body></html>";
+            int i = existing.LastIndexOf("</body>", StringComparison.OrdinalIgnoreCase);
+            if (i >= 0) return existing.Substring(0, i) + entry + existing.Substring(i);
+            var old = System.Security.SecurityElement.Escape(existing).Replace("\r\n", "\n").Replace("\n", "<br />");
+            return "<html><body>\n<div align=\"left\">" + old + "</div>\n" + entry + "</body></html>";
+        }
+
+        /// Text of an ALM memo without its HTML, with single spaces.
+        public static string PlainText(string html)
+        {
+            var t = Regex.Replace(html ?? "", @"<[^>]+>", " ");
+            return Regex.Replace(WebUtility.HtmlDecode(t), @"\s+", " ").Trim();
+        }
+
+        /// The comment is already in the defect's Comments (e.g. added by an earlier Apply).
+        public static bool HasComment(string existing, string text)
+        {
+            // the typed text is plain text: only its spaces are evened out
+            var want = Regex.Replace(text ?? "", @"\s+", " ").Trim();
+            return want != "" && PlainText(existing).IndexOf(want, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// Uploads files to one entity; names that are already there are skipped.
+        public static string UploadFiles(AlmClient client, string entity, string id, List<string> files, HashSet<string> done)
+        {
+            var there = client.ListAttachmentNames(entity, id);
+            int up = 0, skipped = 0;
+            foreach (var f in files)
+            {
+                var name = Path.GetFileName(f);
+                if (there.Contains(name)) { skipped++; done.Add(f); continue; }
+                client.UploadAttachment(entity, id, f, name);
+                there.Add(name);
+                done.Add(f);
+                up++;
+            }
+            return up + " file(s) uploaded" + (skipped > 0 ? ", " + skipped + " already there" : "");
+        }
+
+        /// Files of a defect folder: "<folder>\<defect id>\..." (the sub folder name may also be e.g. "Defect 3798").
+        public static Dictionary<string, List<string>> ReadDefectFolder(string folder)
+        {
+            var map = new Dictionary<string, List<string>>();
+            foreach (var dir in Directory.GetDirectories(folder))
+            {
+                var ids = ParseIds(Path.GetFileName(dir));
+                if (ids.Count != 1) continue;
+                List<string> l;
+                if (!map.TryGetValue(ids[0], out l)) map[ids[0]] = l = new List<string>();
+                l.AddRange(Util.ListFiles(dir));
+            }
+            return map;
+        }
+
         /// Writes the new values of one test case. The status is set directly, or through a run
         /// when ALM refuses that; the other fields are changed together first.
         public static string Apply(AlmClient client, DefectCase c, Dictionary<string, AlmClient.FieldDef> defs)
@@ -444,9 +519,19 @@ namespace AlmImageUploader
         protected readonly ListBox lstChanges;
         protected readonly ListView lv;
         protected readonly Button btnFind, btnApply, btnStop, btnAdd, btnRemove, btnImportList, btnTickAll, btnUntickAll;
-        readonly Label lblSummary, lblList;
-        bool filling;
+        protected readonly TextBox txtComment;
+        protected readonly ListBox lstFiles;
+        protected readonly CheckBox chkFilesCases, chkFilesDefects;
+        protected readonly Button btnAddFiles, btnFolder, btnRemoveFile;
+        readonly Label lblSummary, lblList, lblFolder;
+        bool filling, hadComment;
         int listSeq;
+        string commentField = "dev-comments", commentLabel = "Comments";
+
+        /// Files for every ticked test case / defect, and the folder with a sub folder per defect id.
+        protected readonly List<string> allFiles = new List<string>();
+        protected string defectFolder;
+        Dictionary<string, List<string>> folderFiles = new Dictionary<string, List<string>>();
 
         protected Dictionary<string, AlmClient.FieldDef> defs;
         protected readonly List<KeyValuePair<AlmClient.FieldDef, string>> forAll = new List<KeyValuePair<AlmClient.FieldDef, string>>();
@@ -462,7 +547,7 @@ namespace AlmImageUploader
             this.client = client;
             this.lab = lab;
             Text = "Change test cases by defect";
-            ClientSize = new Size(1040, 700);
+            ClientSize = new Size(1060, 820);
             MaximizeBox = true;
 
             var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(10) };
@@ -529,8 +614,59 @@ namespace AlmImageUploader
             t.Controls.Add(editor, 1, 3);
             t.SetColumnSpan(editor, 2);
 
-            // 3. find and check
-            t.Controls.Add(new Label { Text = "3.  Check", AutoSize = true, Margin = new Padding(3, 9, 3, 3) }, 0, 4);
+            // 3. comment and attachments
+            t.Controls.Add(new Label { Text = "3.  Comment &&\n     attachments", AutoSize = true, Margin = new Padding(3, 9, 3, 3) }, 0, 4);
+            var extra = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 0) };
+            extra.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            extra.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            extra.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            extra.Controls.Add(new Label { Text = "Comment for the defects (optional, added with your name and date)", AutoSize = true }, 0, 0);
+            txtComment = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Height = 70, AcceptsReturn = true };
+            txtComment.TextChanged += (s, e) =>
+            {
+                bool has = txtComment.Text.Trim() != "";
+                if (has != hadComment) { hadComment = has; Fill(); }
+            };
+            lstFiles = new ListBox { Dock = DockStyle.Fill, Height = 70, IntegralHeight = false, SelectionMode = SelectionMode.MultiExtended, HorizontalScrollbar = true };
+            lstFiles.SelectedIndexChanged += (s, e) => UpdateButtons();
+            btnAddFiles = Btn("Add files...");
+            btnFolder = Btn("Defect folder...");
+            btnRemoveFile = Btn("Remove");
+            btnAddFiles.Click += (s, e) =>
+            {
+                using (var d = new OpenFileDialog { Multiselect = true, Title = "Files for every ticked test case / defect" })
+                    if (d.ShowDialog(this) == DialogResult.OK) AddFiles(d.FileNames);
+            };
+            btnFolder.Click += (s, e) =>
+            {
+                using (var d = new FolderBrowserDialog { Description = "Folder with one sub folder per defect ID (e.g. ...\\3798\\), whose files go to that defect only" })
+                    if (d.ShowDialog(this) == DialogResult.OK) SetDefectFolder(d.SelectedPath);
+            };
+            btnRemoveFile.Click += (s, e) => RemoveFiles();
+            var fileButtons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0) };
+            fileButtons.Controls.AddRange(new Control[] { btnAddFiles, btnFolder, btnRemoveFile });
+            extra.Controls.Add(txtComment, 0, 1);
+            extra.Controls.Add(lstFiles, 1, 1);
+            extra.Controls.Add(fileButtons, 2, 1);
+            // "Attachments (optional), upload to: [x] test cases [x] defects" above the file list
+            chkFilesCases = new CheckBox { Text = "test cases", AutoSize = true, Checked = true, Margin = new Padding(6, 0, 0, 0) };
+            chkFilesDefects = new CheckBox { Text = "defects", AutoSize = true, Checked = true, Margin = new Padding(6, 0, 0, 0) };
+            chkFilesCases.CheckedChanged += (s, e) => Fill();
+            chkFilesDefects.CheckedChanged += (s, e) => Fill();
+            lblFolder = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(10, 2, 0, 0) };
+            var fileHead = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+            fileHead.Controls.AddRange(new Control[] { new Label { Text = "Attachments (optional) - upload to:", AutoSize = true, Margin = new Padding(3, 2, 0, 0) },
+                                                       chkFilesCases, chkFilesDefects });
+            extra.Controls.Add(fileHead, 1, 0);
+            extra.SetColumnSpan(fileHead, 2);
+            extra.RowCount = 2;
+            extra.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            extra.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            t.Controls.Add(extra, 1, 4);
+            t.SetColumnSpan(extra, 2);
+
+            // 4. find and check
+            t.Controls.Add(new Label { Text = "4.  Check", AutoSize = true, Margin = new Padding(3, 9, 3, 3) }, 0, 5);
             btnFind = Btn("Find test cases", true);
             btnFind.Click += (s, e) => Find();
             cboShow = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150 };
@@ -543,7 +679,7 @@ namespace AlmImageUploader
             btnUntickAll.Click += (s, e) => { foreach (var c in cases) c.Ticked = false; Fill(); };
             var findRow = new FlowLayoutPanel { AutoSize = true };
             findRow.Controls.AddRange(new Control[] { btnFind, new Label { Text = "Show:", AutoSize = true, Margin = new Padding(16, 8, 0, 3) }, cboShow, btnTickAll, btnUntickAll });
-            t.Controls.Add(findRow, 1, 4);
+            t.Controls.Add(findRow, 1, 5);
             t.SetColumnSpan(findRow, 2);
 
             lv = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, CheckBoxes = true };
@@ -552,20 +688,22 @@ namespace AlmImageUploader
             lv.Columns.Add("Defect status", 90);
             lv.Columns.Add("Test set", 210);
             lv.Columns.Add("Test case", 170);
-            lv.Columns.Add("Changes", 330);
-            lv.Columns.Add("Result", 200);
+            lv.Columns.Add("Changes", 300);
+            lv.Columns.Add("Defect update", 170);
+            lv.Columns.Add("Result", 220);
             lv.ItemChecked += (s, e) =>
             {
                 if (filling) return;
                 var c = e.Item.Tag as DefectCase;
-                if (c == null || c.Error != null || c.New.Count == 0) { filling = true; e.Item.Checked = false; filling = false; return; }
+                if (c == null || c.Error != null) { filling = true; e.Item.Checked = false; filling = false; return; }
                 c.Ticked = e.Item.Checked;
-                Summary();
+                // the defect columns of the other rows depend on what is ticked
+                BeginInvoke(new Action(Fill));
             };
-            t.Controls.Add(lv, 0, 5);
+            t.Controls.Add(lv, 0, 6);
             t.SetColumnSpan(lv, 3);
             lblSummary = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 3), Text = "Loading the fields of the test cases..." };
-            t.Controls.Add(lblSummary, 0, 6);
+            t.Controls.Add(lblSummary, 0, 7);
             t.SetColumnSpan(lblSummary, 3);
 
             var row = new FlowLayoutPanel { AutoSize = true };
@@ -577,13 +715,14 @@ namespace AlmImageUploader
             btnApply.Click += (s, e) => DoApply();
             btnStop.Click += (s, e) => stop = true;
             row.Controls.AddRange(new Control[] { btnApply, btnStop, close });
-            t.Controls.Add(row, 0, 7);
+            t.Controls.Add(row, 0, 8);
             t.SetColumnSpan(row, 3);
             txtLog = LogBox();
-            t.Controls.Add(txtLog, 0, 8);
+            t.Controls.Add(txtLog, 0, 9);
             t.SetColumnSpan(txtLog, 3);
-            t.RowCount = 9;
-            for (int i = 0; i < 5; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.RowCount = 10;
+            for (int i = 0; i < 6; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.RowStyles[4] = new RowStyle(SizeType.Absolute, 140);   // comment / attachments: room for the three buttons
             t.RowStyles.Add(new RowStyle(SizeType.Percent, 75));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -598,7 +737,19 @@ namespace AlmImageUploader
         void LoadFields()
         {
             List<AlmClient.FieldDef> all = null;
-            Run(() => all = client.GetFieldDefs("test-instance"), () =>
+            Run(() =>
+            {
+                all = client.GetFieldDefs("test-instance");
+                try
+                {
+                    var dd = client.GetFieldDefs("defect").Where(f => f.Active).ToList();
+                    var cf = dd.FirstOrDefault(f => f.Name == "dev-comments")
+                             ?? dd.FirstOrDefault(f => f.Label.IndexOf("comment", StringComparison.OrdinalIgnoreCase) >= 0
+                                                       && f.Type.IndexOf("memo", StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (cf != null) { commentField = cf.Name; commentLabel = cf.Label; }
+                }
+                catch (AlmException) { }   // keep "dev-comments"
+            }, () =>
             {
                 if (all == null) { lblSummary.Text = "Could not read the fields of the test cases."; return; }
                 defs = new Dictionary<string, AlmClient.FieldDef>();
@@ -757,7 +908,7 @@ namespace AlmImageUploader
                     var vals = client.GetListValues(id);
                     lock (listValues) listValues[id] = vals;
                 }
-                found = DefectLinks.Find(client, wanted, fields, lab, Log);
+                found = DefectLinks.Find(client, wanted, fields, lab, Log, commentField);
                 Log(string.Format("{0} defect(s): {1} test case(s) linked, {2} defect(s) with a problem.",
                                   wanted.Count, found.Count, wanted.Count(d => d.Problem != null)));
             }, () =>
@@ -766,6 +917,7 @@ namespace AlmImageUploader
                 {
                     defects = wanted;
                     cases = found;
+                    ApplyFolder(true);
                     Replan();
                 }
                 else lblSummary.Text = "Could not read the defects.";
@@ -782,15 +934,131 @@ namespace AlmImageUploader
             Fill();
         }
 
-        string ChangeText(DefectCase c)
+        // ------------------------------------------------------------ attachments
+        void AddFiles(IEnumerable<string> paths)
         {
-            return string.Join(";   ", c.New.Select(kv => defs[kv.Key].Label + ":  " + Disp(c.Now(kv.Key)) + "  ->  " + Disp(kv.Value)));
+            if (Busy) return;
+            foreach (var p in paths)
+                if (!allFiles.Contains(p, StringComparer.OrdinalIgnoreCase)) allFiles.Add(p);
+            ShowFiles();
+            Fill();
         }
 
-        bool Wanted(DefectCase c) { return c.Ticked && c.Error == null && c.New.Count > 0; }
+        void RemoveFiles()
+        {
+            if (Busy) return;
+            var sel = lstFiles.SelectedIndices.Cast<int>().OrderByDescending(i => i).ToList();
+            foreach (var i in sel)
+            {
+                if (i < allFiles.Count) allFiles.RemoveAt(i);
+                else defectFolder = null;   // the folder line
+            }
+            if (defectFolder == null) folderFiles = new Dictionary<string, List<string>>();
+            ApplyFolder(false);
+            ShowFiles();
+            Fill();
+        }
+
+        public void SetDefectFolder(string folder)
+        {
+            if (Busy) return;
+            try { folderFiles = DefectLinks.ReadDefectFolder(folder); }
+            catch (Exception e)
+            {
+                if (!(e is IOException || e is UnauthorizedAccessException)) throw;
+                Log("Could not read " + folder + ": " + e.Message);
+                return;
+            }
+            defectFolder = folder;
+            Log(string.Format("Defect folder {0}: {1} defect sub folder(s) with {2} file(s){3}", folder, folderFiles.Count,
+                              folderFiles.Values.Sum(l => l.Count),
+                              folderFiles.Count == 0 ? " - name the sub folders after the defect IDs, e.g. 3798" : ""));
+            ApplyFolder(true);
+            ShowFiles();
+            Fill();
+        }
+
+        /// Gives every defect the files of its own sub folder.
+        void ApplyFolder(bool report)
+        {
+            foreach (var d in defects)
+            {
+                d.FolderFiles.Clear();
+                List<string> l;
+                if (folderFiles.TryGetValue(d.Id, out l)) d.FolderFiles.AddRange(l);
+            }
+            if (report && defects.Count > 0 && folderFiles.Count > 0)
+            {
+                var unused = folderFiles.Keys.Where(id => !defects.Any(d => d.Id == id)).ToList();
+                if (unused.Count > 0) Log("Sub folders for defects that are not in the list (not used): " + string.Join(", ", unused.Take(20)));
+            }
+        }
+
+        void ShowFiles()
+        {
+            lstFiles.Items.Clear();
+            foreach (var f in allFiles) lstFiles.Items.Add(Path.GetFileName(f) + "      (" + Path.GetDirectoryName(f) + ")");
+            if (defectFolder != null)
+                lstFiles.Items.Add(string.Format("[defect folder]  {0}  -  {1} defect(s), {2} file(s)", defectFolder, folderFiles.Count, folderFiles.Values.Sum(l => l.Count)));
+            lblFolder.Text = allFiles.Count == 0 && defectFolder == null ? ""
+                : string.Format("{0} file(s) for all{1}", allFiles.Count, defectFolder != null ? " + a defect folder" : "");
+            UpdateButtons();
+        }
+
+        /// Files still to upload: the same files for all plus the defect's own, one per file name.
+        static List<string> Pending(IEnumerable<string> files, HashSet<string> done)
+        {
+            return files.Where(f => !done.Contains(f))
+                        .GroupBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
+        }
+
+        List<string> CaseFiles(DefectCase c)
+        {
+            if (!chkFilesCases.Checked) return new List<string>();
+            return Pending(allFiles.Concat(c.Defects.SelectMany(d => d.FolderFiles)), c.UploadedFiles);
+        }
+
+        List<string> DefectFiles(DefectInfo d)
+        {
+            if (!chkFilesDefects.Checked) return new List<string>();
+            return Pending(allFiles.Concat(d.FolderFiles), d.UploadedFiles);
+        }
+
+        string CommentText { get { return txtComment.Text.Trim(); } }
+
+        bool CommentPending(DefectInfo d) { return CommentText != "" && !DefectLinks.HasComment(d.CommentNow, CommentText); }
+
+        /// A defect is updated when at least one of its test cases is ticked.
+        bool DefectActive(DefectInfo d)
+        {
+            return d.Found && d.Problem == null && cases.Any(c => c.Ticked && c.Error == null && c.Defects.Contains(d));
+        }
+
+        bool DefectWanted(DefectInfo d) { return DefectActive(d) && (CommentPending(d) || DefectFiles(d).Count > 0); }
+
+        string DefectText(DefectInfo d)
+        {
+            var parts = new List<string>();
+            if (CommentPending(d)) parts.Add("comment");
+            int n = DefectFiles(d).Count;
+            if (n > 0) parts.Add(n + " file(s)");
+            return parts.Count > 0 ? string.Join(" + ", parts) : d.Result;
+        }
+
+        // ------------------------------------------------------------ list
+        string ChangeText(DefectCase c)
+        {
+            var parts = c.New.Select(kv => defs[kv.Key].Label + ":  " + Disp(c.Now(kv.Key)) + "  ->  " + Disp(kv.Value)).ToList();
+            int n = CaseFiles(c).Count;
+            if (n > 0) parts.Add("+ " + n + " file(s)");
+            return string.Join(";   ", parts);
+        }
+
+        bool Wanted(DefectCase c) { return c.Ticked && c.Error == null && (c.New.Count > 0 || CaseFiles(c).Count > 0); }
 
         protected void Fill()
         {
+            if (defs == null) return;
             filling = true;
             lv.BeginUpdate();
             lv.Items.Clear();
@@ -798,26 +1066,28 @@ namespace AlmImageUploader
             foreach (var d in defects.Where(d => d.Problem != null))
             {
                 if (show == 1) continue;
-                var it = new ListViewItem(new[] { d.Id, d.Summary, d.Status, "", "", "", d.Problem }) { Tag = d, ForeColor = Color.Firebrick };
+                var it = new ListViewItem(new[] { d.Id, d.Summary, d.Status, "", "", "", "", d.Problem }) { Tag = d, ForeColor = Color.Firebrick };
                 lv.Items.Add(it);
             }
             foreach (var c in cases)
             {
-                bool problem = c.Error != null || c.Result.StartsWith("FAILED");
-                bool updated = c.Result.StartsWith("updated");
-                if (show == 1 && c.New.Count == 0 && !updated) continue;
+                bool problem = c.Error != null || c.Result.Contains("FAILED");
+                bool updated = c.Result != "" && !c.Result.StartsWith("FAILED");
+                bool wanted = Wanted(c);
+                var defectText = string.Join(";  ", c.Defects.Where(DefectActive).Select(d => new { d.Id, T = DefectText(d) })
+                                                     .Where(x => x.T != "").Select(x => x.Id + ": " + x.T));
+                if (show == 1 && !wanted && !updated && defectText == "") continue;
                 if (show == 2 && !problem) continue;
                 var d0 = c.Defects[0];
                 var it = new ListViewItem(new[]
                 {
                     c.DefectIds, d0.Summary + (c.Defects.Count > 1 ? "  (+" + (c.Defects.Count - 1) + ")" : ""), d0.Status,
-                    c.SetPath, c.Inst.Label,
-                    c.New.Count > 0 ? ChangeText(c) : "",
-                    c.Error ?? (c.Result.StartsWith("FAILED") || (c.Result != "" && c.New.Count == 0) ? c.Result
-                                : c.New.Count > 0 ? (c.Ticked ? "will change" : "not ticked") : "no change"),
-                }) { Tag = c, Checked = Wanted(c) };
-                it.ForeColor = problem ? Color.Firebrick : updated && c.New.Count == 0 ? Color.ForestGreen
-                             : c.New.Count > 0 && c.Ticked ? SystemColors.WindowText : SystemColors.GrayText;
+                    c.SetPath, c.Inst.Label, ChangeText(c), defectText,
+                    c.Error ?? (problem || (updated && !wanted) ? c.Result
+                                : wanted ? "will change" : c.Ticked ? "no change" : "not ticked"),
+                }) { Tag = c, Checked = c.Ticked && c.Error == null };
+                it.ForeColor = problem ? Color.Firebrick : updated && !wanted ? Color.ForestGreen
+                             : wanted ? SystemColors.WindowText : SystemColors.GrayText;
                 lv.Items.Add(it);
             }
             lv.EndUpdate();
@@ -828,12 +1098,14 @@ namespace AlmImageUploader
         void Summary()
         {
             if (defects.Count == 0) { UpdateButtons(); return; }
-            int change = cases.Count(Wanted), same = cases.Count(c => c.Error == null && c.New.Count == 0),
-                unticked = cases.Count(c => c.Error == null && c.New.Count > 0 && !c.Ticked),
-                bad = cases.Count(c => c.Error != null) + defects.Count(d => d.Problem != null);
-            lblSummary.Text = string.Format("{0} defect(s), {1} linked test case(s):   {2} to change,   {3} already the same,   {4} not ticked,   {5} problem(s) (red).",
-                                            defects.Count, cases.Count, change, same, unticked, bad)
-                              + (forAll.Count == 0 && !defects.Any(d => d.ListValues.Count > 0) ? "   Add a change in step 2." : "");
+            int change = cases.Count(Wanted), same = cases.Count(c => c.Ticked && c.Error == null && !Wanted(c)),
+                unticked = cases.Count(c => c.Error == null && !c.Ticked),
+                bad = cases.Count(c => c.Error != null) + defects.Count(d => d.Problem != null),
+                defectUpdates = defects.Count(DefectWanted);
+            lblSummary.Text = string.Format("{0} defect(s), {1} linked test case(s):   {2} to change,   {6} defect(s) to update,   {3} with nothing to do,   {4} not ticked,   {5} problem(s) (red).",
+                                            defects.Count, cases.Count, change, same, unticked, bad, defectUpdates)
+                              + (forAll.Count == 0 && !defects.Any(d => d.ListValues.Count > 0) && CommentText == "" && allFiles.Count == 0 && defectFolder == null
+                                 ? "   Add a change in step 2 or a comment / files in step 3." : "");
             UpdateButtons();
         }
 
@@ -844,8 +1116,9 @@ namespace AlmImageUploader
             btnFind.Enabled = !busy && ready && DefectLinks.ParseIds(txtIds.Text).Count > 0;
             btnAdd.Enabled = !busy && f != null && (f.ListId == "" || cboValue.SelectedItem != null);
             btnRemove.Enabled = !busy && lstChanges.SelectedIndex >= 0;
-            btnImportList.Enabled = !busy;
-            btnApply.Enabled = !busy && cases.Any(Wanted);
+            btnImportList.Enabled = btnAddFiles.Enabled = btnFolder.Enabled = !busy;
+            btnRemoveFile.Enabled = !busy && lstFiles.SelectedIndices.Count > 0;
+            btnApply.Enabled = !busy && ready && (cases.Any(Wanted) || defects.Any(DefectWanted));
             btnTickAll.Enabled = btnUntickAll.Enabled = !busy && cases.Count > 0;
         }
 
@@ -854,38 +1127,68 @@ namespace AlmImageUploader
         {
             if (Busy || defs == null) return;
             var todo = cases.Where(Wanted).ToList();
-            if (todo.Count == 0) return;
-            int n = todo.Sum(c => c.New.Count);
+            var caseFiles = todo.ToDictionary(c => c, CaseFiles);
+            var defTodo = defects.Where(DefectWanted).ToList();
+            var comment = CommentText;
+            var defComment = defTodo.ToDictionary(d => d, CommentPending);
+            var defFiles = defTodo.ToDictionary(d => d, DefectFiles);
+            if (todo.Count == 0 && defTodo.Count == 0) return;
+
+            int n = todo.Sum(c => c.New.Count), files = caseFiles.Values.Sum(l => l.Count);
             var sb = new StringBuilder();
-            sb.AppendFormat("Write {0} change(s) to {1} test case(s) in ALM?", n, todo.Count).AppendLine().AppendLine();
+            var what = new List<string>();
+            if (n > 0) what.Add(string.Format("write {0} field change(s) to {1} test case(s)", n, todo.Count(c => c.New.Count > 0)));
+            if (files > 0) what.Add(string.Format("upload {0} file(s) to {1} test case(s)", files, caseFiles.Count(kv => kv.Value.Count > 0)));
+            if (defTodo.Count > 0) what.Add(string.Format("update {0} defect(s)", defTodo.Count));
+            sb.Append("In ALM: " + string.Join(", ", what) + "?").AppendLine().AppendLine();
+            if (todo.Count > 0) sb.AppendLine("Test cases:");
             foreach (var c in todo.Take(15))
-                sb.AppendLine("Defect " + c.DefectIds + "  |  " + c.SetPath + "  >  " + c.Inst.Label + ":   " + ChangeText(c));
-            if (todo.Count > 15) sb.AppendLine("... and " + (todo.Count - 15) + " more (see the list).");
+                sb.AppendLine("   Defect " + c.DefectIds + "  |  " + c.SetPath + "  >  " + c.Inst.Label + ":   " + ChangeText(c));
+            if (todo.Count > 15) sb.AppendLine("   ... and " + (todo.Count - 15) + " more (see the list).");
+            if (defTodo.Count > 0)
+            {
+                sb.AppendLine().AppendLine("Defects:");
+                foreach (var d in defTodo.Take(15))
+                    sb.AppendLine("   Defect " + d.Id + " (" + d.Summary + "):   "
+                                  + string.Join(",  ", new[] { defComment[d] ? "add a comment to " + commentLabel : null,
+                                                               defFiles[d].Count > 0 ? "upload " + defFiles[d].Count + " file(s)" : null }.Where(x => x != null)));
+                if (defTodo.Count > 15) sb.AppendLine("   ... and " + (defTodo.Count - 15) + " more.");
+            }
+            if (defComment.Values.Any(x => x))
+                sb.AppendLine().AppendLine("Comment:  " + (comment.Length > 300 ? comment.Substring(0, 300) + "..." : comment).Replace("\r\n", " / ").Replace("\n", " / "));
+            var names = caseFiles.Values.Concat(defFiles.Values).SelectMany(l => l).Select(Path.GetFileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (names.Count > 0)
+                sb.AppendLine().AppendLine("Files:  " + string.Join(", ", names.Take(10)) + (names.Count > 10 ? " ... (" + names.Count + ")" : ""));
             if (todo.Any(c => c.New.ContainsKey("status")))
                 sb.AppendLine().Append("If ALM does not allow changing the status directly, a run with that status is added instead.");
-            if (!Confirm(sb.ToString())) return;
+            if (!Confirm(sb.ToString().TrimEnd())) return;
+
             btnApply.Enabled = btnFind.Enabled = false;
             btnStop.Enabled = true;
-            int ok = 0, failed = 0;
+            int ok = 0, failed = 0, dok = 0, dfailed = 0;
+            var user = client.User;
             Run(() =>
             {
                 foreach (var c in todo)
                 {
                     if (stop) { Log("Stopped."); break; }
                     var before = new Dictionary<string, string>(c.New);
+                    var parts = new List<string>();
+                    bool bad = false;
                     try
                     {
-                        c.Result = DefectLinks.Apply(client, c, defs);
-                        ok++;
-                        Log("[ OK ] defect " + c.DefectIds + "  " + c.SetPath + " > " + c.Inst.Label + ": " + c.Result);
+                        if (c.New.Count > 0) parts.Add(DefectLinks.Apply(client, c, defs));
+                        if (caseFiles[c].Count > 0) parts.Add(DefectLinks.UploadFiles(client, "test-instances", c.Inst.Id, caseFiles[c], c.UploadedFiles));
                     }
                     catch (Exception e)
                     {
-                        if (!(e is AlmException || e is WebException)) throw;
-                        c.Result = "FAILED: " + e.Message;
-                        failed++;
-                        Log("[FAIL] defect " + c.DefectIds + "  " + c.SetPath + " > " + c.Inst.Label + ": " + e.Message);
+                        if (!(e is AlmException || e is WebException || e is IOException)) throw;
+                        parts.Add("FAILED: " + e.Message);
+                        bad = true;
                     }
+                    c.Result = string.Join(";  ", parts);
+                    if (bad) failed++; else ok++;
+                    Log((bad ? "[FAIL] defect " : "[ OK ] defect ") + c.DefectIds + "  " + c.SetPath + " > " + c.Inst.Label + ": " + c.Result);
                     // what is in ALM now (also the fields written before a failure)
                     var inLab = lab == null ? null : lab.FindInstance(c.Inst.Id);
                     if (inLab != null)
@@ -893,15 +1196,58 @@ namespace AlmImageUploader
                             foreach (var kv in before.Where(kv => c.Now(kv.Key) == kv.Value))
                                 Changes.Add(new FieldChange { Instance = inLab, Field = kv.Key, Value = kv.Value });
                     int done = ok + failed;
-                    Ui(() => lblSummary.Text = string.Format("Writing to ALM...  {0} / {1}", done, todo.Count));
+                    Ui(() => lblSummary.Text = string.Format("Writing to ALM...  test case {0} / {1}", done, todo.Count));
                 }
-                Log(string.Format("Done: {0} test case(s) updated, {1} failed.", ok, failed));
+                foreach (var d in defTodo)
+                {
+                    if (stop) break;
+                    var parts = new List<string>();
+                    bool bad = false;
+                    if (defComment[d])
+                    {
+                        try
+                        {
+                            // the latest Comments, in case someone added one meanwhile
+                            var now = client.GetByIds("defects", "id", new[] { d.Id }, new[] { "id", commentField }).FirstOrDefault();
+                            string cur;
+                            if (now != null && now.TryGetValue(commentField, out cur)) d.CommentNow = cur ?? "";
+                            if (DefectLinks.HasComment(d.CommentNow, comment)) parts.Add("comment already there");
+                            else
+                            {
+                                var value = DefectLinks.AppendComment(d.CommentNow, user, comment, DateTime.Now);
+                                client.UpdateEntity("defects", d.Id, new Dictionary<string, string> { { commentField, value } });
+                                d.CommentNow = value;
+                                parts.Add("comment added");
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            if (!(e is AlmException || e is WebException)) throw;
+                            parts.Add("comment FAILED: " + e.Message);
+                            bad = true;
+                        }
+                    }
+                    if (defFiles[d].Count > 0)
+                    {
+                        try { parts.Add(DefectLinks.UploadFiles(client, "defects", d.Id, defFiles[d], d.UploadedFiles)); }
+                        catch (Exception e)
+                        {
+                            if (!(e is AlmException || e is WebException || e is IOException)) throw;
+                            parts.Add("files FAILED: " + e.Message);
+                            bad = true;
+                        }
+                    }
+                    d.Result = string.Join(";  ", parts);
+                    if (bad) dfailed++; else dok++;
+                    Log((bad ? "[FAIL] defect " : "[ OK ] defect ") + d.Id + ": " + d.Result);
+                    int done = dok + dfailed;
+                    Ui(() => lblSummary.Text = string.Format("Writing to ALM...  defect {0} / {1}", done, defTodo.Count));
+                }
+                Log(string.Format("Done: {0} test case(s) updated, {1} failed;  {2} defect(s) updated, {3} failed.", ok, failed, dok, dfailed));
             }, () =>
             {
                 btnStop.Enabled = false;
                 Replan();
-                foreach (var c in todo.Where(c => c.Result.StartsWith("FAILED"))) c.Ticked = true;
-                Fill();
             });
         }
     }
