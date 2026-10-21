@@ -347,6 +347,13 @@ namespace AlmImageUploader
             }).Where(a => a.Name != "").ToList();
         }
 
+        /// Web address of one attachment's file (opens in a browser that is logged in to ALM).
+        public string AttachmentUrl(string entity, string id, Attachment att)
+        {
+            return att.Id != "" ? Rest("attachments") + "/" + att.Id + "?alt=application/octet-stream"
+                                : Rest(entity) + "/" + id + "/attachments/" + Uri.EscapeDataString(att.Name);
+        }
+
         /// Download one attachment's file content.
         public byte[] DownloadAttachment(string entity, string id, Attachment att)
         {

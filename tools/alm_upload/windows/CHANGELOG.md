@@ -1,5 +1,13 @@
 # ALM Image Uploader - changelog
 
+## 2.12.0
+- Change by defect: "Add links to the test cases' attachments in the comment". The comment
+  added to each defect lists the attachments of its ticked test cases, grouped by test case
+  ("<test set path> > <test case> (test case <id>)"), each a link to the original file in
+  ALM (opens in a browser that is logged in to ALM). Works with or without comment text.
+  Links already in the defect's Comments are not added again; a later Apply only adds the
+  links that are new.
+
 ## 2.11.0
 - Change by defect: "Copy the test cases' own attachments to their defects" (optionally
   images only). The attachments already on the ticked test cases are copied to the defects

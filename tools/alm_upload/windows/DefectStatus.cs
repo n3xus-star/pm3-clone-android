@@ -65,6 +65,12 @@ namespace AlmImageUploader
         public readonly Dictionary<string, Dictionary<string, string>> Values = new Dictionary<string, Dictionary<string, string>>();
     }
 
+    /// A link to one attachment of a test case, for a defect's Comments.
+    public class LinkItem
+    {
+        public string Url, Name, CaseText;
+    }
+
     public static class DefectLinks
     {
         static readonly string[] LinkFields = { "id", "first-endpoint-id", "second-endpoint-id", "second-endpoint-type" };
@@ -419,8 +425,20 @@ namespace AlmImageUploader
         /// "user, date:" and the text. What was there stays.
         public static string AppendComment(string existing, string user, string text, DateTime when)
         {
+            return AppendCommentHtml(existing, user, TextHtml(text), when);
+        }
+
+        static string Esc(string s) { return System.Security.SecurityElement.Escape(s ?? ""); }
+
+        /// Plain text as HTML: escaped, new lines as line breaks.
+        public static string TextHtml(string text)
+        {
+            return Esc((text ?? "").Trim()).Replace("\r\n", "\n").Replace("\n", "<br />");
+        }
+
+        public static string AppendCommentHtml(string existing, string user, string body, DateTime when)
+        {
             const string Font = "<font face=\"Arial\"{0}><span style=\"font-size:8pt\">{1}</span></font>";
-            var body = System.Security.SecurityElement.Escape(text.Trim()).Replace("\r\n", "\n").Replace("\n", "<br />");
             var entry = "<div align=\"left\">" + string.Format(Font, "", "<br />")
                       + string.Format(Font, " color=\"#000080\"", "<b>________________________________________</b>") + "</div>\n"
                       + "<div align=\"left\">" + string.Format(Font, " color=\"#000080\"",
@@ -447,6 +465,36 @@ namespace AlmImageUploader
             // the typed text is plain text: only its spaces are evened out
             var want = Regex.Replace(text ?? "", @"\s+", " ").Trim();
             return want != "" && PlainText(existing).IndexOf(want, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// The link is already in the defect's Comments.
+        public static bool LinkThere(string existing, string url)
+        {
+            existing = existing ?? "";
+            return existing.IndexOf(url, StringComparison.OrdinalIgnoreCase) >= 0
+                   || existing.IndexOf(Esc(url), StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// What to add to a defect's Comments: the text (unless it is there already) and links to the
+        /// test cases' attachments that are not there yet, grouped by test case. "" when nothing is new.
+        public static string CommentBody(string existing, string text, List<LinkItem> links)
+        {
+            var parts = new List<string>();
+            text = (text ?? "").Trim();
+            if (text != "" && !HasComment(existing, text)) parts.Add(TextHtml(text));
+            var fresh = (links ?? new List<LinkItem>()).Where(l => !LinkThere(existing, l.Url)).ToList();
+            if (fresh.Count > 0)
+            {
+                var sb = new StringBuilder("<b>Attachments of the test case(s):</b>");
+                foreach (var g in fresh.GroupBy(l => l.CaseText))
+                {
+                    sb.Append("<br />" + Esc(g.Key) + ":");
+                    foreach (var l in g)
+                        sb.Append("<br />&nbsp;&nbsp;- <a href=\"" + Esc(l.Url) + "\">" + Esc(l.Name) + "</a>");
+                }
+                parts.Add(sb.ToString());
+            }
+            return string.Join("<br />", parts);
         }
 
         /// Uploads files to one entity; names that are already there are skipped.
@@ -525,7 +573,7 @@ namespace AlmImageUploader
         protected readonly Button btnFind, btnApply, btnStop, btnAdd, btnRemove, btnImportList, btnTickAll, btnUntickAll;
         protected readonly TextBox txtComment;
         protected readonly ListBox lstFiles;
-        protected readonly CheckBox chkFilesCases, chkFilesDefects, chkCopyFromCases, chkCopyImagesOnly;
+        protected readonly CheckBox chkFilesCases, chkFilesDefects, chkCopyFromCases, chkCopyImagesOnly, chkLinks;
         protected readonly Button btnAddFiles, btnFolder, btnRemoveFile;
         readonly Label lblSummary, lblList, lblFolder;
         bool filling, hadComment;
@@ -674,6 +722,12 @@ namespace AlmImageUploader
             var copyRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
             copyRow.Controls.AddRange(new Control[] { chkCopyFromCases, chkCopyImagesOnly });
             extra.Controls.Add(copyRow, 1, 2);
+            chkLinks = new CheckBox { Text = "Add links to the test cases' attachments in the comment", AutoSize = true, Margin = new Padding(3, 4, 0, 0) };
+            chkLinks.CheckedChanged += (s, e) =>
+            {
+                if (chkLinks.Checked && cases.Any(c => c.Atts == null)) LoadCaseAttachments(); else Fill();
+            };
+            extra.Controls.Add(chkLinks, 0, 2);
             extra.SetColumnSpan(copyRow, 2);
             extra.RowCount = 3;
             extra.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -913,7 +967,7 @@ namespace AlmImageUploader
             var fields = UsableFields().Select(f => f.Name).ToList();
             var lists = forAll.Select(kv => kv.Key).Concat(listFields).Where(f => f.ListId != "").Select(f => f.ListId).Distinct().ToList();
             List<DefectCase> found = null;
-            bool copyAtts = chkCopyFromCases.Checked;
+            bool copyAtts = chkCopyFromCases.Checked || chkLinks.Checked;
             lblSummary.Text = string.Format("Reading {0} defect(s) and their links from ALM...", ids.Count);
             btnFind.Enabled = btnApply.Enabled = false;
             Run(() =>
@@ -1108,7 +1162,21 @@ namespace AlmImageUploader
 
         string CommentText { get { return txtComment.Text.Trim(); } }
 
-        bool CommentPending(DefectInfo d) { return CommentText != "" && !DefectLinks.HasComment(d.CommentNow, CommentText); }
+        /// Links to the attachments of the defect's ticked test cases.
+        protected List<LinkItem> LinksFor(DefectInfo d)
+        {
+            if (!chkLinks.Checked) return new List<LinkItem>();
+            return cases.Where(c => c.Ticked && c.Error == null && c.Atts != null && c.Defects.Contains(d))
+                        .SelectMany(c => c.Atts.Select(a => new LinkItem
+                        {
+                            Url = client.AttachmentUrl("test-instances", c.Inst.Id, a), Name = a.Name,
+                            CaseText = c.SetPath + " > " + c.Inst.Label + " (test case " + c.Inst.Id + ")",
+                        })).ToList();
+        }
+
+        int NewLinks(DefectInfo d) { return LinksFor(d).Count(l => !DefectLinks.LinkThere(d.CommentNow, l.Url)); }
+
+        bool CommentPending(DefectInfo d) { return DefectLinks.CommentBody(d.CommentNow, CommentText, LinksFor(d)) != ""; }
 
         /// A defect is updated when at least one of its test cases is ticked.
         bool DefectActive(DefectInfo d)
@@ -1121,7 +1189,12 @@ namespace AlmImageUploader
         string DefectText(DefectInfo d)
         {
             var parts = new List<string>();
-            if (CommentPending(d)) parts.Add("comment");
+            if (CommentPending(d))
+            {
+                int k0 = NewLinks(d);
+                bool text = CommentText != "" && !DefectLinks.HasComment(d.CommentNow, CommentText);
+                parts.Add(text ? (k0 > 0 ? "comment + " + k0 + " link(s)" : "comment") : k0 + " link(s) in comment");
+            }
             int n = DefectFiles(d).Count;
             if (n > 0) parts.Add(n + " file(s)");
             int k = CopyPlan(d).Count;
@@ -1188,7 +1261,7 @@ namespace AlmImageUploader
                 defectUpdates = defects.Count(DefectWanted);
             lblSummary.Text = string.Format("{0} defect(s), {1} linked test case(s):   {2} to change,   {6} defect(s) to update,   {3} with nothing to do,   {4} not ticked,   {5} problem(s) (red).",
                                             defects.Count, cases.Count, change, same, unticked, bad, defectUpdates)
-                              + (forAll.Count == 0 && !defects.Any(d => d.ListValues.Count > 0) && CommentText == "" && allFiles.Count == 0 && defectFolder == null && !chkCopyFromCases.Checked
+                              + (forAll.Count == 0 && !defects.Any(d => d.ListValues.Count > 0) && CommentText == "" && allFiles.Count == 0 && defectFolder == null && !chkCopyFromCases.Checked && !chkLinks.Checked
                                  ? "   Add a change in step 2 or a comment / files in step 3." : "");
             UpdateButtons();
         }
@@ -1215,6 +1288,8 @@ namespace AlmImageUploader
             var defTodo = defects.Where(DefectWanted).ToList();
             var comment = CommentText;
             var defComment = defTodo.ToDictionary(d => d, CommentPending);
+            var defLinks = defTodo.ToDictionary(d => d, LinksFor);
+            var defNewLinks = defTodo.ToDictionary(d => d, NewLinks);
             var defFiles = defTodo.ToDictionary(d => d, DefectFiles);
             var defCopy = defTodo.ToDictionary(d => d, CopyPlan);
             if (todo.Count == 0 && defTodo.Count == 0) return;
@@ -1235,14 +1310,14 @@ namespace AlmImageUploader
                 sb.AppendLine().AppendLine("Defects:");
                 foreach (var d in defTodo.Take(15))
                     sb.AppendLine("   Defect " + d.Id + " (" + d.Summary + "):   "
-                                  + string.Join(",  ", new[] { defComment[d] ? "add a comment to " + commentLabel : null,
+                                  + string.Join(",  ", new[] { defComment[d] ? "add a comment to " + commentLabel + (defNewLinks[d] > 0 ? " (with " + defNewLinks[d] + " attachment link(s))" : "") : null,
                                                                defFiles[d].Count > 0 ? "upload " + defFiles[d].Count + " file(s)" : null,
                                                                defCopy[d].Count > 0 ? "copy " + defCopy[d].Count + " attachment(s) from its test cases ("
                                                                    + string.Join(", ", defCopy[d].Select(x => x.Target).Take(5)) + (defCopy[d].Count > 5 ? ", ..." : "") + ")" : null }
                                                     .Where(x => x != null)));
                 if (defTodo.Count > 15) sb.AppendLine("   ... and " + (defTodo.Count - 15) + " more.");
             }
-            if (defComment.Values.Any(x => x))
+            if (comment != "" && defTodo.Any(d => defComment[d] && !DefectLinks.HasComment(d.CommentNow, comment)))
                 sb.AppendLine().AppendLine("Comment:  " + (comment.Length > 300 ? comment.Substring(0, 300) + "..." : comment).Replace("\r\n", " / ").Replace("\n", " / "));
             var names = caseFiles.Values.Concat(defFiles.Values).SelectMany(l => l).Select(Path.GetFileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             if (names.Count > 0)
@@ -1299,10 +1374,11 @@ namespace AlmImageUploader
                             var now = client.GetByIds("defects", "id", new[] { d.Id }, new[] { "id", commentField }).FirstOrDefault();
                             string cur;
                             if (now != null && now.TryGetValue(commentField, out cur)) d.CommentNow = cur ?? "";
-                            if (DefectLinks.HasComment(d.CommentNow, comment)) parts.Add("comment already there");
+                            var body = DefectLinks.CommentBody(d.CommentNow, comment, defLinks[d]);
+                            if (body == "") parts.Add("comment already there");
                             else
                             {
-                                var value = DefectLinks.AppendComment(d.CommentNow, user, comment, DateTime.Now);
+                                var value = DefectLinks.AppendCommentHtml(d.CommentNow, user, body, DateTime.Now);
                                 client.UpdateEntity("defects", d.Id, new Dictionary<string, string> { { commentField, value } });
                                 d.CommentNow = value;
                                 parts.Add("comment added");
