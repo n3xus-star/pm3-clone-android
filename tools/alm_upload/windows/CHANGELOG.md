@@ -1,5 +1,11 @@
 # ALM Image Uploader - changelog
 
+## 2.9.1
+- Change by defect: fixed "HTTP 500 The source ids ... is not a comma separated list of
+  numbers" on ALM 25.1. The links are now asked for as "{first-endpoint-id[1,2,3]}" (with
+  "1 OR 2" and one defect at a time as fallbacks). A defect whose links cannot be read is
+  shown in red with the reason instead of stopping the whole search.
+
 ## 2.9.0
 - New "Change by defect..." (top of step 3): change the test cases linked to defects.
   - Type or paste many defect IDs, or import a list (Excel, CSV or text). List columns named

@@ -15,7 +15,7 @@ namespace AlmImageUploader
     /// One defect ID asked for, with what ALM says about it.
     public class DefectInfo
     {
-        public string Id, Summary = "", Status = "", Problem;
+        public string Id, Summary = "", Status = "", Problem, LinkError;
         public bool Found;
         /// Linked entities that are not test cases in Test Lab, e.g. "test 501".
         public readonly List<string> LinkedTo = new List<string>();
@@ -165,6 +165,61 @@ namespace AlmImageUploader
             return t;
         }
 
+        /// The links of the defects. ALM wants the defect ids of a link query as a comma separated
+        /// list ("{first-endpoint-id[1,2,3]}", not "1 OR 2"); when that fails, one defect at a time.
+        static List<Dictionary<string, string>> ReadLinks(AlmClient client, List<DefectInfo> found, Action<string> log)
+        {
+            var links = new List<Dictionary<string, string>>();
+            var ids = found.Select(d => d.Id).Distinct().ToList();
+            try
+            {
+                for (int n = 0; n < ids.Count; n += 50)
+                    links.AddRange(client.GetEntities("defect-links", "{first-endpoint-id[" + string.Join(",", ids.Skip(n).Take(50)) + "]}", LinkFields));
+                // other ALM versions may want "1 OR 2" instead: ask again for the defects without links
+                var none = ids.Where(id => !links.Any(l => Get(l, "first-endpoint-id") == id)).ToList();
+                if (none.Count > 1)
+                {
+                    try
+                    {
+                        var known = new HashSet<string>(links.Select(l => Get(l, "id")));
+                        links.AddRange(client.GetByIds("defect-links", "first-endpoint-id", none, LinkFields)
+                                             .Where(l => Get(l, "id") == "" || known.Add(Get(l, "id"))));
+                    }
+                    catch (AlmException) { }
+                }
+                return links;
+            }
+            catch (AlmException e)
+            {
+                log("Reading the links of each defect one by one (" + e.Message + ")");
+                links.Clear();
+            }
+            foreach (var d in found)
+            {
+                try
+                {
+                    List<Dictionary<string, string>> mine;
+                    try { mine = client.GetEntities("defect-links", "{first-endpoint-id[" + d.Id + "]}", LinkFields); }
+                    catch (AlmException first)
+                    {
+                        try { mine = client.GetEntities("defects/" + d.Id + "/defect-links", null, LinkFields); }
+                        catch (AlmException) { throw first; }
+                    }
+                    foreach (var l in mine)
+                    {
+                        if (Get(l, "first-endpoint-id") == "") l["first-endpoint-id"] = d.Id;
+                        links.Add(l);
+                    }
+                }
+                catch (AlmException e)
+                {
+                    d.LinkError = e.Message;
+                    log("Could not read the links of defect " + d.Id + ": " + e.Message);
+                }
+            }
+            return links;
+        }
+
         /// Reads the defects, their links, and the test cases the links lead to (directly, or through a
         /// run / run step of the test case), with the current values of the given fields.
         public static List<DefectCase> Find(AlmClient client, List<DefectInfo> defects, IEnumerable<string> fields,
@@ -181,23 +236,7 @@ namespace AlmImageUploader
             }
             var found = defects.Where(d => d.Found).ToList();
 
-            List<Dictionary<string, string>> links;
-            try
-            {
-                links = client.GetByIds("defect-links", "first-endpoint-id", found.Select(d => d.Id), LinkFields);
-            }
-            catch (AlmException e)
-            {
-                // some ALM versions only list the links of one defect at a time
-                log("Reading the links of each defect one by one (" + e.Message + ")");
-                links = new List<Dictionary<string, string>>();
-                foreach (var d in found)
-                    foreach (var l in client.GetEntities("defects/" + d.Id + "/defect-links", null, LinkFields))
-                    {
-                        if (Get(l, "first-endpoint-id") == "") l["first-endpoint-id"] = d.Id;
-                        links.Add(l);
-                    }
-            }
+            var links = ReadLinks(client, found, log);
 
             // defect -> test instance ids, directly or through runs / steps
             var instOf = new Dictionary<string, List<string>>();
@@ -310,6 +349,7 @@ namespace AlmImageUploader
             foreach (var d in defects)
             {
                 if (!d.Found) d.Problem = "defect not found in ALM";
+                else if (d.LinkError != null) d.Problem = "could not read its links: " + d.LinkError;
                 else if (!cases.Values.Any(c => c.Defects.Contains(d)))
                     d.Problem = "no linked test case in Test Lab" + (d.LinkedTo.Count > 0 ? " (linked to " + string.Join(", ", d.LinkedTo.Take(5)) + ")" : "");
             }
