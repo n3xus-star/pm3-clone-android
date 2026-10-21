@@ -68,7 +68,12 @@ namespace AlmImageUploader
     /// A link to one attachment of a test case, for a defect's Comments.
     public class LinkItem
     {
-        public string Url, Name, CaseText;
+        public string Url, Name, CaseText, CaseId;
+        public AlmClient.Attachment Att;
+        public bool IsImage { get { return Util.ImageExts.Contains(Path.GetExtension(Name ?? "").ToLowerInvariant()); } }
+        /// Shown as a picture (pictures on and an image); else a link.
+        public bool Picture;
+        public int Width, Height;   // 0: unknown
     }
 
     public static class DefectLinks
@@ -490,11 +495,49 @@ namespace AlmImageUploader
                 {
                     sb.Append("<br />" + Esc(g.Key) + ":");
                     foreach (var l in g)
-                        sb.Append("<br />&nbsp;&nbsp;- <a href=\"" + Esc(l.Url) + "\">" + Esc(l.Name) + "</a>");
+                    {
+                        if (l.Picture)
+                        {
+                            // a small picture (click: full size), its name under it
+                            var size = l.Width > 0 && l.Height > 0 ? " width=\"" + l.Width + "\" height=\"" + l.Height + "\"" : " style=\"max-width:" + PictureWidth + "px; max-height:" + PictureWidth + "px\"";
+                            sb.Append("<br /><a href=\"" + Esc(l.Url) + "\"><img src=\"" + Esc(l.Url) + "\" alt=\"" + Esc(l.Name) + "\" border=\"0\"" + size + " /></a>"
+                                      + "<br />&nbsp;&nbsp;" + Esc(l.Name));
+                        }
+                        else sb.Append("<br />&nbsp;&nbsp;- <a href=\"" + Esc(l.Url) + "\">" + Esc(l.Name) + "</a>");
+                    }
                 }
                 parts.Add(sb.ToString());
             }
             return string.Join("<br />", parts);
+        }
+
+        public const int PictureWidth = 400;
+
+        /// Reads the size of the pictures (at most PictureWidth wide and high, same proportions).
+        public static void SizePictures(AlmClient client, IEnumerable<LinkItem> items)
+        {
+            foreach (var l in items.Where(l => l.Picture && l.Width == 0))
+            {
+                try
+                {
+                    using (var ms = new MemoryStream(client.DownloadAttachment("test-instances", l.CaseId, l.Att)))
+                    using (var img = Image.FromStream(ms, false, false))
+                    {
+                        // fits in a PictureWidth x PictureWidth box, same proportions
+                        int w = img.Width, h = img.Height;
+                        double k = Math.Min(1.0, Math.Min((double)PictureWidth / w, (double)PictureWidth / h));
+                        w = (int)Math.Round(w * k);
+                        h = (int)Math.Round(h * k);
+                        l.Width = Math.Max(w, 1);
+                        l.Height = Math.Max(h, 1);
+                    }
+                }
+                catch (Exception e)
+                {
+                    // not readable as a picture here (e.g. webp): the browser sizes it
+                    if (!(e is AlmException || e is WebException || e is ArgumentException || e is OutOfMemoryException || e is IOException)) throw;
+                }
+            }
         }
 
         /// Uploads files to one entity; names that are already there are skipped.
@@ -573,7 +616,7 @@ namespace AlmImageUploader
         protected readonly Button btnFind, btnApply, btnStop, btnAdd, btnRemove, btnImportList, btnTickAll, btnUntickAll;
         protected readonly TextBox txtComment;
         protected readonly ListBox lstFiles;
-        protected readonly CheckBox chkFilesCases, chkFilesDefects, chkCopyFromCases, chkCopyImagesOnly, chkLinks;
+        protected readonly CheckBox chkFilesCases, chkFilesDefects, chkCopyFromCases, chkCopyImagesOnly, chkLinks, chkPictures;
         protected readonly Button btnAddFiles, btnFolder, btnRemoveFile;
         readonly Label lblSummary, lblList, lblFolder;
         bool filling, hadComment;
@@ -722,12 +765,17 @@ namespace AlmImageUploader
             var copyRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
             copyRow.Controls.AddRange(new Control[] { chkCopyFromCases, chkCopyImagesOnly });
             extra.Controls.Add(copyRow, 1, 2);
-            chkLinks = new CheckBox { Text = "Add links to the test cases' attachments in the comment", AutoSize = true, Margin = new Padding(3, 4, 0, 0) };
+            chkLinks = new CheckBox { Text = "Test case attachments in the comment", AutoSize = true, Margin = new Padding(3, 4, 0, 0) };
+            chkPictures = new CheckBox { Text = "as pictures", AutoSize = true, Margin = new Padding(8, 4, 0, 0), Checked = true, Enabled = false };
             chkLinks.CheckedChanged += (s, e) =>
             {
+                chkPictures.Enabled = chkLinks.Checked;
                 if (chkLinks.Checked && cases.Any(c => c.Atts == null)) LoadCaseAttachments(); else Fill();
             };
-            extra.Controls.Add(chkLinks, 0, 2);
+            chkPictures.CheckedChanged += (s, e) => Fill();
+            var linkRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+            linkRow.Controls.AddRange(new Control[] { chkLinks, chkPictures });
+            extra.Controls.Add(linkRow, 0, 2);
             extra.SetColumnSpan(copyRow, 2);
             extra.RowCount = 3;
             extra.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1169,12 +1217,25 @@ namespace AlmImageUploader
             return cases.Where(c => c.Ticked && c.Error == null && c.Atts != null && c.Defects.Contains(d))
                         .SelectMany(c => c.Atts.Select(a => new LinkItem
                         {
-                            Url = client.AttachmentUrl("test-instances", c.Inst.Id, a), Name = a.Name,
+                            Url = client.AttachmentUrl("test-instances", c.Inst.Id, a), Name = a.Name, CaseId = c.Inst.Id, Att = a,
                             CaseText = c.SetPath + " > " + c.Inst.Label + " (test case " + c.Inst.Id + ")",
-                        })).ToList();
+                        }))
+                        .Select(l => { l.Picture = chkPictures.Checked && l.IsImage; return l; }).ToList();
         }
 
         int NewLinks(DefectInfo d) { return LinksFor(d).Count(l => !DefectLinks.LinkThere(d.CommentNow, l.Url)); }
+
+        int NewPictures(DefectInfo d) { return LinksFor(d).Count(l => l.Picture && !DefectLinks.LinkThere(d.CommentNow, l.Url)); }
+
+        /// "3 picture(s) + 1 link(s)" for the new attachments of a defect's comment.
+        string AttachText(DefectInfo d)
+        {
+            int all = NewLinks(d), pics = NewPictures(d);
+            var parts = new List<string>();
+            if (pics > 0) parts.Add(pics + " picture(s)");
+            if (all - pics > 0) parts.Add((all - pics) + " link(s)");
+            return string.Join(" + ", parts);
+        }
 
         bool CommentPending(DefectInfo d) { return DefectLinks.CommentBody(d.CommentNow, CommentText, LinksFor(d)) != ""; }
 
@@ -1191,9 +1252,9 @@ namespace AlmImageUploader
             var parts = new List<string>();
             if (CommentPending(d))
             {
-                int k0 = NewLinks(d);
+                var att = AttachText(d);
                 bool text = CommentText != "" && !DefectLinks.HasComment(d.CommentNow, CommentText);
-                parts.Add(text ? (k0 > 0 ? "comment + " + k0 + " link(s)" : "comment") : k0 + " link(s) in comment");
+                parts.Add(text ? (att != "" ? "comment + " + att : "comment") : att + " in comment");
             }
             int n = DefectFiles(d).Count;
             if (n > 0) parts.Add(n + " file(s)");
@@ -1289,7 +1350,7 @@ namespace AlmImageUploader
             var comment = CommentText;
             var defComment = defTodo.ToDictionary(d => d, CommentPending);
             var defLinks = defTodo.ToDictionary(d => d, LinksFor);
-            var defNewLinks = defTodo.ToDictionary(d => d, NewLinks);
+            var defAttach = defTodo.ToDictionary(d => d, AttachText);
             var defFiles = defTodo.ToDictionary(d => d, DefectFiles);
             var defCopy = defTodo.ToDictionary(d => d, CopyPlan);
             if (todo.Count == 0 && defTodo.Count == 0) return;
@@ -1310,7 +1371,7 @@ namespace AlmImageUploader
                 sb.AppendLine().AppendLine("Defects:");
                 foreach (var d in defTodo.Take(15))
                     sb.AppendLine("   Defect " + d.Id + " (" + d.Summary + "):   "
-                                  + string.Join(",  ", new[] { defComment[d] ? "add a comment to " + commentLabel + (defNewLinks[d] > 0 ? " (with " + defNewLinks[d] + " attachment link(s))" : "") : null,
+                                  + string.Join(",  ", new[] { defComment[d] ? "add a comment to " + commentLabel + (defAttach[d] != "" ? " (with " + defAttach[d] + ")" : "") : null,
                                                                defFiles[d].Count > 0 ? "upload " + defFiles[d].Count + " file(s)" : null,
                                                                defCopy[d].Count > 0 ? "copy " + defCopy[d].Count + " attachment(s) from its test cases ("
                                                                    + string.Join(", ", defCopy[d].Select(x => x.Target).Take(5)) + (defCopy[d].Count > 5 ? ", ..." : "") + ")" : null }
@@ -1374,6 +1435,7 @@ namespace AlmImageUploader
                             var now = client.GetByIds("defects", "id", new[] { d.Id }, new[] { "id", commentField }).FirstOrDefault();
                             string cur;
                             if (now != null && now.TryGetValue(commentField, out cur)) d.CommentNow = cur ?? "";
+                            DefectLinks.SizePictures(client, defLinks[d].Where(l => !DefectLinks.LinkThere(d.CommentNow, l.Url)));
                             var body = DefectLinks.CommentBody(d.CommentNow, comment, defLinks[d]);
                             if (body == "") parts.Add("comment already there");
                             else

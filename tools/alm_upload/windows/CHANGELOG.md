@@ -1,5 +1,12 @@
 # ALM Image Uploader - changelog
 
+## 2.13.0
+- Change by defect: "Test case attachments in the comment" (was: links) with "as pictures".
+  The pictures of the ticked test cases are shown in the defect's comment, small (at most
+  400 x 400 px, same proportions; click for the full size), with their names under them;
+  other files (Excel, logs, ...) stay links. The pictures are read straight from the test
+  cases' attachments in ALM, so the comment stays small.
+
 ## 2.12.0
 - Change by defect: "Add links to the test cases' attachments in the comment". The comment
   added to each defect lists the attachments of its ticked test cases, grouped by test case
