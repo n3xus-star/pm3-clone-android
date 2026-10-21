@@ -8,7 +8,7 @@ No Python and no installation needed: one `.exe` file.
 
 ## Windows program (single .exe, recommended)
 
-Current version: **2.8.0** (see `windows/CHANGELOG.md`).
+Current version: **2.9.0** (see `windows/CHANGELOG.md`).
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
@@ -49,6 +49,11 @@ nothing to install and no Python. It works step by step:
      another department's (matched by ID, else by test set + test case name, also similar
      test set names) - and shows every change before writing it to ALM; "Upload
      attachments" (on by default) puts the exported attachments on the matched test cases
+   - **Change by defect...** takes defect IDs (typed, pasted or imported from an Excel / CSV /
+     text list), finds the test cases linked to them anywhere in the project (directly or
+     through a run / run step) and changes one or more fields (Status, Comments, ...) after
+     showing every change and asking for confirmation; list columns such as Status give each
+     defect its own value
    - **Set field...** changes one field (e.g. the *Comments* selection list to *NA*)
      on all ticked test cases; the values come from the field's ALM list
    The assignments and what was uploaded are saved in `ALM-assignments.txt` in the

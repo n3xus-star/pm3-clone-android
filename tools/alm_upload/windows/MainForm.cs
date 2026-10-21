@@ -377,22 +377,25 @@ namespace AlmImageUploader
             main.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
 
             // header: who / where + change project / log out
-            var head = new TableLayoutPanel { ColumnCount = 5, AutoSize = true, Dock = DockStyle.Top };
+            var head = new TableLayoutPanel { ColumnCount = 6, AutoSize = true, Dock = DockStyle.Top };
             head.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             lblWho3 = new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 8, 3, 3) };
             var btnChange = B("<  Change project");
             var btnLogout = B("Log out");
             btnExport = B("Export results...");
             btnImport = B("Import results...");
+            var btnDefects = B("Change by defect...");
             btnChange.Click += (s, e) => { if (!Busy()) ShowPage(pageProject); };
             btnLogout.Click += (s, e) => { if (!Busy()) Logout(); };
             btnExport.Click += (s, e) => OpenExport();
             btnImport.Click += (s, e) => OpenImport();
+            btnDefects.Click += (s, e) => OpenDefects();
             head.Controls.Add(lblWho3, 0, 0);
             head.Controls.Add(btnExport, 1, 0);
             head.Controls.Add(btnImport, 2, 0);
-            head.Controls.Add(btnChange, 3, 0);
-            head.Controls.Add(btnLogout, 4, 0);
+            head.Controls.Add(btnDefects, 3, 0);
+            head.Controls.Add(btnChange, 4, 0);
+            head.Controls.Add(btnLogout, 5, 0);
             main.Controls.Add(head, 0, 0);
 
             // sources
@@ -1595,6 +1598,17 @@ namespace AlmImageUploader
             }
         }
 
+        /// Changes the test cases linked to defects; works with or without a loaded Test Lab folder.
+        void OpenDefects()
+        {
+            if (Busy()) return;
+            using (var dlg = new DefectStatusDialog(client, lab, Setting("export_folder")))
+            {
+                dlg.ShowDialog(this);
+                ApplyFieldChanges(dlg.Changes);
+            }
+        }
+
         void ApplyFieldChanges(List<FieldChange> changes)
         {
             foreach (var ch in changes)
@@ -1833,7 +1847,7 @@ namespace AlmImageUploader
         public readonly List<FieldChange> Changes = new List<FieldChange>();
 
         // structural fields that must not be changed from here
-        static readonly HashSet<string> Hidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        internal static readonly HashSet<string> Hidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "id", "cycle-id", "test-id", "test-order", "test-config-id", "ver-stamp", "last-modified", "subtype-id", "iterations" };
 
         readonly AlmClient client;

@@ -1,5 +1,17 @@
 # ALM Image Uploader - changelog
 
+## 2.9.0
+- New "Change by defect..." (top of step 3): change the test cases linked to defects.
+  - Type or paste many defect IDs, or import a list (Excel, CSV or text). List columns named
+    after a field (e.g. Status, Comments) give each defect its own value.
+  - Finds the test cases anywhere in the project's Test Lab: linked directly to the defect,
+    or through a run / run step of the test case. Defects that are not found or have no
+    linked test case are shown in red.
+  - Change any editable test case field, several at once (e.g. Status = Passed and
+    Comments = NA). The list shows every change (old -> new) with a tick box per test case,
+    and Apply asks for confirmation, listing the changes.
+  - The status is set directly, or through a run when ALM does not allow that.
+
 ## 2.8.0
 - Download attachments: third "Folders" choice "<test set>_<test case>_1.png" puts every
   image in the chosen folder itself, with no sub folders at all. When two test sets share a
