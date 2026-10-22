@@ -660,7 +660,7 @@ namespace AlmImageUploader
         protected readonly ComboBox cboField, cboValue, cboShow;
         protected readonly ListBox lstChanges;
         protected readonly ListView lv;
-        protected readonly Button btnFind, btnApply, btnStop, btnAdd, btnRemove, btnImportList, btnTickAll, btnUntickAll;
+        protected readonly Button btnFind, btnApply, btnStop, btnAdd, btnRemove, btnImportList, btnTickAll, btnUntickAll, btnDeleteComments;
         protected readonly TextBox txtComment;
         protected readonly ListBox lstFiles;
         protected readonly CheckBox chkFilesCases, chkFilesDefects, chkCopyFromCases, chkCopyImagesOnly, chkLinks;
@@ -865,7 +865,10 @@ namespace AlmImageUploader
             btnTickAll.Click += (s, e) => { foreach (var c in cases) c.Ticked = true; Fill(); };
             btnUntickAll.Click += (s, e) => { foreach (var c in cases) c.Ticked = false; Fill(); };
             var findRow = new FlowLayoutPanel { AutoSize = true };
-            findRow.Controls.AddRange(new Control[] { btnFind, new Label { Text = "Show:", AutoSize = true, Margin = new Padding(16, 8, 0, 3) }, cboShow, btnTickAll, btnUntickAll });
+            btnDeleteComments = Btn("Delete defect comments...");
+            btnDeleteComments.Click += (s, e) => OpenDeleteComments();
+            findRow.Controls.AddRange(new Control[] { btnFind, new Label { Text = "Show:", AutoSize = true, Margin = new Padding(16, 8, 0, 3) }, cboShow, btnTickAll, btnUntickAll,
+                                                      new Label { AutoSize = true, Width = 24, Text = "" }, btnDeleteComments });
             t.Controls.Add(findRow, 1, 5);
             t.SetColumnSpan(findRow, 2);
 
@@ -1491,6 +1494,27 @@ namespace AlmImageUploader
             btnRemoveFile.Enabled = !busy && lstFiles.SelectedIndices.Count > 0;
             btnApply.Enabled = !busy && ready && (cases.Any(Wanted) || defects.Any(DefectWanted));
             btnTickAll.Enabled = btnUntickAll.Enabled = !busy && cases.Count > 0;
+            btnDeleteComments.Enabled = !busy && ready && DefectLinks.ParseIds(txtIds.Text).Count > 0;
+        }
+
+        /// Deletes chosen comments of the defects in the box; the list here then shows their new Comments.
+        protected void OpenDeleteComments()
+        {
+            if (Busy || defs == null) return;
+            var ids = DefectLinks.ParseIds(txtIds.Text);
+            if (ids.Count == 0) return;
+            using (var dlg = CreateDeleteDialog(ids))
+            {
+                dlg.ShowDialog(this);
+                foreach (var kv in dlg.Changed)
+                    foreach (var d in defects.Where(x => x.Id == kv.Key)) d.CommentNow = kv.Value;
+                if (dlg.Changed.Count > 0) Fill();
+            }
+        }
+
+        protected virtual DeleteCommentsDialog CreateDeleteDialog(List<string> ids)
+        {
+            return new DeleteCommentsDialog(client, ids, commentField, commentLabel);
         }
 
         // ------------------------------------------------------------ apply

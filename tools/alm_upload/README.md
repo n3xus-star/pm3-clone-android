@@ -8,7 +8,7 @@ No Python and no installation needed: one `.exe` file.
 
 ## Windows program (single .exe, recommended)
 
-Current version: **2.15.0** (see `windows/CHANGELOG.md`).
+Current version: **2.16.0** (see `windows/CHANGELOG.md`).
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
@@ -59,6 +59,8 @@ nothing to install and no Python. It works step by step:
      to the test cases and / or the defects, or copy the test cases' own attachments to
      their defects, or show those attachments in the defect comment (small pictures embedded in the comment,
      other files as links that ask for the ALM login when needed)
+     **Delete defect comments...** there removes chosen comments (by date, author or one by one)
+     from the defects' Comments and keeps a copy of the old text in Documents
    - **Set field...** changes one field (e.g. the *Comments* selection list to *NA*)
      on all ticked test cases; the values come from the field's ALM list
    The assignments and what was uploaded are saved in `ALM-assignments.txt` in the

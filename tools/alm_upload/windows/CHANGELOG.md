@@ -1,5 +1,15 @@
 # ALM Image Uploader - changelog
 
+## 2.16.0
+- Change by defect: new "Delete defect comments..." for the defect IDs in the box. It splits
+  each defect's Comments into its comments ("____" line, "user, date:" and the text) and lists
+  them with date, author and text. Tick a date to tick all its comments, filter by author
+  (changing the filter never changes what is ticked), or tick / untick single comments.
+  Only the ticked comments are removed; the others stay as they are. Before deleting, a copy
+  of each defect's Comments is saved in Documents\ALM Image Uploader\Comment backups, the
+  Comments are read again (comments changed meanwhile are left alone), and afterwards they
+  are read back to check the result.
+
 ## 2.15.0
 - Change by defect, "Test case attachments in comment": pictures read from ALM only showed
   where the viewer had an ALM REST login ("Authentication failed. Browser based
