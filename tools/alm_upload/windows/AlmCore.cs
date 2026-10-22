@@ -501,6 +501,19 @@ namespace AlmImageUploader
             }).Where(f => f.Name != "").ToList();
         }
 
+        /// The project's users: login name and full name.
+        public List<KeyValuePair<string, string>> GetUsers()
+        {
+            var r = Send("GET", Rest("customization/users"), null, null, null, true);
+            Check(r, "read the users of the project");
+            var doc = new XmlDocument();
+            doc.LoadXml(r.Body);
+            return doc.GetElementsByTagName("User").Cast<XmlElement>()
+                      .Select(e => new KeyValuePair<string, string>(e.GetAttribute("Name"), e.GetAttribute("FullName")))
+                      .Where(u => u.Key != "").GroupBy(u => u.Key, StringComparer.OrdinalIgnoreCase).Select(g => g.First())
+                      .OrderBy(u => u.Value != "" ? u.Value : u.Key, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
         /// The values of an ALM selection list (all levels, in list order).
         public List<string> GetListValues(string listId)
         {

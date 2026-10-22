@@ -20,6 +20,8 @@ namespace AlmImageUploader
         /// The defect's Comments now (HTML), what was done to it, and files for it alone
         /// (from a "<defect folder>\<defect id>\" sub folder).
         public string CommentNow = "", Result = "";
+        /// Assigned To now, and the value from the imported list (null: none).
+        public string OwnerNow = "", ListOwner;
         public readonly List<string> FolderFiles = new List<string>();
         public readonly HashSet<string> UploadedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         /// Attachment names on the defect in ALM (null until read).
@@ -244,10 +246,10 @@ namespace AlmImageUploader
         /// Reads the defects, their links, and the test cases the links lead to (directly, or through a
         /// run / run step of the test case), with the current values of the given fields.
         public static List<DefectCase> Find(AlmClient client, List<DefectInfo> defects, IEnumerable<string> fields,
-                                            TestLabFolder lab, Action<string> log, string commentField = null)
+                                            TestLabFolder lab, Action<string> log, string commentField = null, string ownerField = null)
         {
             var byId = defects.ToDictionary(d => d.Id);
-            var defectFields = new[] { "id", "name", "status" }.Concat(commentField != null ? new[] { commentField } : new string[0]).ToArray();
+            var defectFields = new[] { "id", "name", "status", commentField, ownerField }.Where(f => f != null).Distinct().ToArray();
             foreach (var b in client.GetByIds("defects", "id", byId.Keys, defectFields))
             {
                 DefectInfo d;
@@ -256,6 +258,7 @@ namespace AlmImageUploader
                 d.Summary = Get(b, "name");
                 d.Status = Get(b, "status");
                 if (commentField != null) d.CommentNow = Get(b, commentField);
+                if (ownerField != null) d.OwnerNow = Get(b, ownerField);
             }
             var found = defects.Where(d => d.Found).ToList();
 
@@ -621,7 +624,12 @@ namespace AlmImageUploader
         readonly Label lblSummary, lblList, lblFolder;
         bool filling, hadComment;
         int listSeq;
-        string commentField = "dev-comments", commentLabel = "Comments";
+        string commentField = "dev-comments", commentLabel = "Comments", ownerField = "owner", ownerLabel = "Assigned To";
+        /// The project's users (login name, full name); null when they could not be read.
+        List<KeyValuePair<string, string>> users;
+        protected readonly ComboBox cboOwner;
+        readonly Label lblOwner;
+        const string NoChange = "(no change)";
 
         /// Files for every ticked test case / defect, and the folder with a sub folder per defect id.
         protected readonly List<string> allFiles = new List<string>();
@@ -706,6 +714,16 @@ namespace AlmImageUploader
             editor.Controls.Add(lstChanges, 3, 1);
             editor.SetRowSpan(lstChanges, 2);
             editor.Controls.Add(btnRemove, 2, 2);
+            lblOwner = new Label { Text = "Defect \"Assigned To\":", AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
+            cboOwner = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Width = 300, AutoCompleteMode = AutoCompleteMode.SuggestAppend,
+                                      AutoCompleteSource = AutoCompleteSource.ListItems };
+            cboOwner.Items.Add(NoChange);
+            cboOwner.SelectedIndex = 0;
+            cboOwner.TextChanged += (s, e) => Fill();
+            var ownerRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 4, 0, 0) };
+            ownerRow.Controls.AddRange(new Control[] { lblOwner, cboOwner });
+            editor.Controls.Add(ownerRow, 0, 2);
+            editor.SetColumnSpan(ownerRow, 2);
             t.Controls.Add(editor, 1, 3);
             t.SetColumnSpan(editor, 2);
 
@@ -867,11 +885,24 @@ namespace AlmImageUploader
                              ?? dd.FirstOrDefault(f => f.Label.IndexOf("comment", StringComparison.OrdinalIgnoreCase) >= 0
                                                        && f.Type.IndexOf("memo", StringComparison.OrdinalIgnoreCase) >= 0);
                     if (cf != null) { commentField = cf.Name; commentLabel = cf.Label; }
+                    var of = dd.FirstOrDefault(f => f.Name == "owner")
+                             ?? dd.FirstOrDefault(f => f.Label.IndexOf("assigned", StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (of != null) { ownerField = of.Name; ownerLabel = of.Label; }
                 }
-                catch (AlmException) { }   // keep "dev-comments"
+                catch (AlmException) { }   // keep "dev-comments" / "owner"
+                try { users = client.GetUsers(); }
+                catch (Exception e)
+                {
+                    if (!(e is AlmException || e is System.Xml.XmlException)) throw;
+                    users = null;
+                    Log("Could not read the users of the project (" + e.Message + "); type the Assigned To login name.");
+                }
             }, () =>
             {
                 if (all == null) { lblSummary.Text = "Could not read the fields of the test cases."; return; }
+                lblOwner.Text = "Defect \"" + ownerLabel + "\":";
+                if (users != null)
+                    foreach (var u in users) cboOwner.Items.Add(UserText(u));
                 defs = new Dictionary<string, AlmClient.FieldDef>();
                 foreach (var f in all.Where(f => f.Active && !defs.ContainsKey(f.Name))) defs[f.Name] = f;
                 if (!defs.ContainsKey("status"))
@@ -968,13 +999,13 @@ namespace AlmImageUploader
             var have = DefectLinks.ParseIds(txtIds.Text);
             var added = file.Ids.Where(i => !have.Contains(i)).ToList();
             txtIds.Text = string.Join(Environment.NewLine, have.Concat(added));
-            var used = file.Columns.Where(c => FieldFor(c) != null).ToList();
+            var used = file.Columns.Where(c => IsOwnerColumn(c) || FieldFor(c) != null).ToList();
             var ignored = file.Columns.Except(used).ToList();
             Log(string.Format("Read {0} defect ID(s) from {1}{2}{3}", file.Ids.Count, Path.GetFileName(path),
                               used.Count > 0 ? ";  values per defect from the column(s): " + string.Join(", ", used) : "",
                               ignored.Count > 0 ? ";  ignored column(s): " + string.Join(", ", ignored) : ""));
             lblList.Text = string.Format("List: {0}  -  {1} defect ID(s){2}", Path.GetFileName(path), file.Ids.Count,
-                                         used.Count > 0 ? ",  own values from: " + string.Join(", ", used.Select(c => FieldFor(c).Label)) : "");
+                                         used.Count > 0 ? ",  own values from: " + string.Join(", ", used.Select(c => IsOwnerColumn(c) ? "defect " + ownerLabel : FieldFor(c).Label)) : "");
             ClearResults();
         }
 
@@ -1007,6 +1038,7 @@ namespace AlmImageUploader
                     if (!listFile.Values.TryGetValue(d.Id, out vals)) continue;
                     foreach (var kv in vals)
                     {
+                        if (IsOwnerColumn(kv.Key)) { if (kv.Value != "") d.ListOwner = kv.Value; continue; }
                         var f = FieldFor(kv.Key);
                         if (f == null) continue;
                         d.ListValues[f.Name] = kv.Value;
@@ -1030,7 +1062,7 @@ namespace AlmImageUploader
                     var vals = client.GetListValues(id);
                     lock (listValues) listValues[id] = vals;
                 }
-                found = DefectLinks.Find(client, wanted, fields, lab, Log, commentField);
+                found = DefectLinks.Find(client, wanted, fields, lab, Log, commentField, ownerField);
                 if (copyAtts) ReadAttachments(found, wanted);
                 Log(string.Format("{0} defect(s): {1} test case(s) linked, {2} defect(s) with a problem.",
                                   wanted.Count, found.Count, wanted.Count(d => d.Problem != null)));
@@ -1230,6 +1262,46 @@ namespace AlmImageUploader
             return plan.Where(x => !d.AttachNames.Contains(x.Target)).ToList();
         }
 
+        // ------------------------------------------------------------ assigned to
+        static string UserText(KeyValuePair<string, string> u) { return u.Value != "" && u.Value != u.Key ? u.Value + "  (" + u.Key + ")" : u.Key; }
+
+        bool IsOwnerColumn(string column)
+        {
+            var n = Util.Norm(column);
+            return n == Util.Norm(ownerLabel) || n == Util.Norm(ownerField) || n == "assigned to" || n == "defect assigned to";
+        }
+
+        /// The login name for what was typed or chosen: a login name, a full name or "Full Name (login)".
+        /// Null when the project's users are known and it is none of them.
+        string ResolveUser(string text)
+        {
+            text = (text ?? "").Trim();
+            if (users == null) return text;
+            foreach (var u in users)
+                if (string.Equals(text, u.Key, StringComparison.OrdinalIgnoreCase) || string.Equals(text, u.Value, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(text, UserText(u), StringComparison.OrdinalIgnoreCase))
+                    return u.Key;
+            return null;
+        }
+
+        string OwnerChoice { get { var t = cboOwner.Text.Trim(); return t == NoChange ? "" : t; } }
+
+        /// What the defect's Assigned To becomes: the list's value for the defect, else the one chosen
+        /// for all. "" = no change; Error set when the user is unknown.
+        string OwnerTarget(DefectInfo d, out string error)
+        {
+            error = null;
+            var raw = !string.IsNullOrEmpty(d.ListOwner) ? d.ListOwner : OwnerChoice;
+            if (raw == "") return "";
+            var name = ResolveUser(raw);
+            if (name == null) { error = "'" + raw + "' is not a user of this project"; return ""; }
+            return string.Equals(name, d.OwnerNow, StringComparison.OrdinalIgnoreCase) ? "" : name;
+        }
+
+        bool OwnerPending(DefectInfo d) { string e; return OwnerTarget(d, out e) != ""; }
+
+        bool OwnerError(DefectInfo d) { string e; OwnerTarget(d, out e); return e != null; }
+
         string CommentText { get { return txtComment.Text.Trim(); } }
 
         /// Links to the attachments of the defect's ticked test cases.
@@ -1267,11 +1339,15 @@ namespace AlmImageUploader
             return d.Found && d.Problem == null && cases.Any(c => c.Ticked && c.Error == null && c.Defects.Contains(d));
         }
 
-        bool DefectWanted(DefectInfo d) { return DefectActive(d) && (CommentPending(d) || DefectFiles(d).Count > 0 || CopyPlan(d).Count > 0); }
+        bool DefectWanted(DefectInfo d) { return DefectActive(d) && (OwnerPending(d) || CommentPending(d) || DefectFiles(d).Count > 0 || CopyPlan(d).Count > 0); }
 
         string DefectText(DefectInfo d)
         {
             var parts = new List<string>();
+            string ownerError;
+            var owner = OwnerTarget(d, out ownerError);
+            if (ownerError != null) parts.Add("unknown user " + ownerError.Substring(0, ownerError.IndexOf(" is not")));
+            else if (owner != "") parts.Add("assign: " + (d.OwnerNow == "" ? "(nobody)" : d.OwnerNow) + " -> " + owner);
             if (CommentPending(d))
             {
                 var att = AttachText(d);
@@ -1326,7 +1402,7 @@ namespace AlmImageUploader
                     c.Error ?? (problem || (updated && !wanted) ? c.Result
                                 : wanted ? "will change" : c.Ticked ? "no change" : "not ticked"),
                 }) { Tag = c, Checked = c.Ticked && c.Error == null };
-                it.ForeColor = problem ? Color.Firebrick : updated && !wanted ? Color.ForestGreen
+                it.ForeColor = problem || (c.Ticked && c.Defects.Any(x => DefectActive(x) && OwnerError(x))) ? Color.Firebrick : updated && !wanted ? Color.ForestGreen
                              : wanted || (c.Ticked && c.Defects.Any(DefectWanted)) ? SystemColors.WindowText : SystemColors.GrayText;
                 lv.Items.Add(it);
             }
@@ -1340,11 +1416,11 @@ namespace AlmImageUploader
             if (defects.Count == 0) { UpdateButtons(); return; }
             int change = cases.Count(Wanted), same = cases.Count(c => c.Ticked && c.Error == null && !Wanted(c)),
                 unticked = cases.Count(c => c.Error == null && !c.Ticked),
-                bad = cases.Count(c => c.Error != null) + defects.Count(d => d.Problem != null),
+                bad = cases.Count(c => c.Error != null) + defects.Count(d => d.Problem != null) + defects.Count(d => DefectActive(d) && OwnerError(d)),
                 defectUpdates = defects.Count(DefectWanted);
             lblSummary.Text = string.Format("{0} defect(s), {1} linked test case(s):   {2} to change,   {6} defect(s) to update,   {3} with nothing to do,   {4} not ticked,   {5} problem(s) (red).",
                                             defects.Count, cases.Count, change, same, unticked, bad, defectUpdates)
-                              + (forAll.Count == 0 && !defects.Any(d => d.ListValues.Count > 0) && CommentText == "" && allFiles.Count == 0 && defectFolder == null && !chkCopyFromCases.Checked && !chkLinks.Checked
+                              + (forAll.Count == 0 && !defects.Any(d => d.ListValues.Count > 0) && CommentText == "" && allFiles.Count == 0 && defectFolder == null && !chkCopyFromCases.Checked && !chkLinks.Checked && OwnerChoice == "" && !defects.Any(d => !string.IsNullOrEmpty(d.ListOwner))
                                  ? "   Add a change in step 2 or a comment / files in step 3." : "");
             UpdateButtons();
         }
@@ -1371,6 +1447,7 @@ namespace AlmImageUploader
             var defTodo = defects.Where(DefectWanted).ToList();
             var comment = CommentText;
             var defComment = defTodo.ToDictionary(d => d, CommentPending);
+            var defOwner = defTodo.ToDictionary(d => d, d => { string e; return OwnerTarget(d, out e); });
             var defLinks = defTodo.ToDictionary(d => d, LinksFor);
             var defAttach = defTodo.ToDictionary(d => d, AttachText);
             var defFiles = defTodo.ToDictionary(d => d, DefectFiles);
@@ -1393,7 +1470,8 @@ namespace AlmImageUploader
                 sb.AppendLine().AppendLine("Defects:");
                 foreach (var d in defTodo.Take(15))
                     sb.AppendLine("   Defect " + d.Id + " (" + d.Summary + "):   "
-                                  + string.Join(",  ", new[] { defComment[d] ? "add a comment to " + commentLabel + (defAttach[d] != "" ? " (with " + defAttach[d] + ")" : "") : null,
+                                  + string.Join(",  ", new[] { defOwner[d] != "" ? "set " + ownerLabel + " to " + defOwner[d] : null,
+                                                               defComment[d] ? "add a comment to " + commentLabel + (defAttach[d] != "" ? " (with " + defAttach[d] + ")" : "") : null,
                                                                defFiles[d].Count > 0 ? "upload " + defFiles[d].Count + " file(s)" : null,
                                                                defCopy[d].Count > 0 ? "copy " + defCopy[d].Count + " attachment(s) from its test cases ("
                                                                    + string.Join(", ", defCopy[d].Select(x => x.Target).Take(5)) + (defCopy[d].Count > 5 ? ", ..." : "") + ")" : null }
@@ -1449,6 +1527,21 @@ namespace AlmImageUploader
                     if (stop) break;
                     var parts = new List<string>();
                     bool bad = false;
+                    if (defOwner[d] != "")
+                    {
+                        try
+                        {
+                            client.UpdateEntity("defects", d.Id, new Dictionary<string, string> { { ownerField, defOwner[d] } });
+                            d.OwnerNow = defOwner[d];
+                            parts.Add(ownerLabel + " = " + defOwner[d]);
+                        }
+                        catch (Exception e)
+                        {
+                            if (!(e is AlmException || e is WebException)) throw;
+                            parts.Add(ownerLabel + " FAILED: " + e.Message);
+                            bad = true;
+                        }
+                    }
                     if (defComment[d])
                     {
                         try

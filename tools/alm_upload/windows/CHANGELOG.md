@@ -1,5 +1,12 @@
 # ALM Image Uploader - changelog
 
+## 2.14.0
+- Change by defect: new "Defect Assigned To" in step 2. Choose a user of the project (the
+  list shows "Full Name (login)"; typing finds them) to set on every defect. An imported list
+  with an "Assigned To" column gives each defect its own user. Unknown users are shown in
+  red and not written; defects that already have that user are left alone. The Defect update
+  column shows "assign: old -> new" and the confirmation lists it.
+
 ## 2.13.1
 - Change by defect: attachment links in the defect comment opened the attachment's details
   (XML) instead of the file on ALM 25.1. The program now tries six link formats the way a
