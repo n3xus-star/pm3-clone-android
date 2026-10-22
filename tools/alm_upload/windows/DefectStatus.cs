@@ -74,8 +74,10 @@ namespace AlmImageUploader
         public AlmClient.Attachment Att;
         public bool IsImage { get { return Util.ImageExts.Contains(Path.GetExtension(Name ?? "").ToLowerInvariant()); } }
         /// Shown as a picture (pictures on and an image); else a link.
-        public bool Picture;
+        public bool Picture, Embed;
         public int Width, Height;   // 0: unknown
+        /// The small picture itself ("data:image/jpeg;base64,..."), when embedded in the comment.
+        public string DataUri;
     }
 
     public static class DefectLinks
@@ -499,14 +501,17 @@ namespace AlmImageUploader
                     sb.Append("<br />" + Esc(g.Key) + ":");
                     foreach (var l in g)
                     {
-                        if (l.Picture)
+                        // links ask ALM for its login form when the browser is not logged in yet
+                        var href = Esc(LoginUrl(l.Url));
+                        if (l.Picture && (!l.Embed || l.DataUri != null))
                         {
                             // a small picture (click: full size), its name under it
                             var size = l.Width > 0 && l.Height > 0 ? " width=\"" + l.Width + "\" height=\"" + l.Height + "\"" : " style=\"max-width:" + PictureWidth + "px; max-height:" + PictureWidth + "px\"";
-                            sb.Append("<br /><a href=\"" + Esc(l.Url) + "\"><img src=\"" + Esc(l.Url) + "\" alt=\"" + Esc(l.Name) + "\" border=\"0\"" + size + " /></a>"
+                            var src = l.DataUri ?? LoginUrl(l.Url);
+                            sb.Append("<br /><a href=\"" + href + "\"><img src=\"" + Esc(src) + "\" alt=\"" + Esc(l.Name) + "\" border=\"0\"" + size + " /></a>"
                                       + "<br />&nbsp;&nbsp;" + Esc(l.Name));
                         }
-                        else sb.Append("<br />&nbsp;&nbsp;- <a href=\"" + Esc(l.Url) + "\">" + Esc(l.Name) + "</a>");
+                        else sb.Append("<br />&nbsp;&nbsp;- <a href=\"" + href + "\">" + Esc(l.Name) + "</a>");
                     }
                 }
                 parts.Add(sb.ToString());
@@ -515,11 +520,49 @@ namespace AlmImageUploader
         }
 
         public const int PictureWidth = 400;
+        /// Largest embedded picture: the ALM desktop client's Internet Explorer shows data pictures up to 32 KB.
+        public const int EmbedBytes = 30000;
 
-        /// Reads the size of the pictures (at most PictureWidth wide and high, same proportions).
+        /// The address with ALM's "show the login form when not logged in" switch.
+        public static string LoginUrl(string url)
+        {
+            if (url.IndexOf("login-form-required=", StringComparison.OrdinalIgnoreCase) >= 0) return url;
+            return url + (url.Contains("?") ? "&" : "?") + "login-form-required=y";
+        }
+
+        /// Small JPEG of a picture as a data address, at most maxBytes (lower quality, then smaller).
+        public static string Thumbnail(Image img, int w, int h, int maxBytes)
+        {
+            var codec = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders().First(c => c.MimeType == "image/jpeg");
+            for (double scale = 1.0; scale > 0.2; scale *= 0.8)
+            {
+                int tw = Math.Max(1, (int)Math.Round(w * scale)), th = Math.Max(1, (int)Math.Round(h * scale));
+                using (var bmp = new Bitmap(tw, th))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                    {
+                        g.Clear(Color.White);   // transparent PNG parts
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(img, 0, 0, tw, th);
+                    }
+                    foreach (long q in new long[] { 80, 65, 50 })
+                        using (var ms = new MemoryStream())
+                        using (var ps = new System.Drawing.Imaging.EncoderParameters(1))
+                        {
+                            ps.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, q);
+                            bmp.Save(ms, codec, ps);
+                            if (ms.Length <= maxBytes) return "data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray());
+                        }
+                }
+            }
+            return null;
+        }
+
+        /// Reads the pictures: their size (at most PictureWidth wide and high, same proportions) and,
+        /// when embedded, a small JPEG of each.
         public static void SizePictures(AlmClient client, IEnumerable<LinkItem> items)
         {
-            foreach (var l in items.Where(l => l.Picture && l.Width == 0))
+            foreach (var l in items.Where(l => l.Picture && (l.Width == 0 || (l.Embed && l.DataUri == null))))
             {
                 try
                 {
@@ -533,6 +576,7 @@ namespace AlmImageUploader
                         h = (int)Math.Round(h * k);
                         l.Width = Math.Max(w, 1);
                         l.Height = Math.Max(h, 1);
+                        if (l.Embed) l.DataUri = Thumbnail(img, l.Width, l.Height, EmbedBytes);
                     }
                 }
                 catch (Exception e)
@@ -619,7 +663,9 @@ namespace AlmImageUploader
         protected readonly Button btnFind, btnApply, btnStop, btnAdd, btnRemove, btnImportList, btnTickAll, btnUntickAll;
         protected readonly TextBox txtComment;
         protected readonly ListBox lstFiles;
-        protected readonly CheckBox chkFilesCases, chkFilesDefects, chkCopyFromCases, chkCopyImagesOnly, chkLinks, chkPictures;
+        protected readonly CheckBox chkFilesCases, chkFilesDefects, chkCopyFromCases, chkCopyImagesOnly, chkLinks;
+        protected readonly ComboBox cboPictures;
+        public const string PicturesEmbedded = "embedded pictures", PicturesFromAlm = "pictures from ALM", PicturesAsLinks = "links only";
         protected readonly Button btnAddFiles, btnFolder, btnRemoveFile;
         readonly Label lblSummary, lblList, lblFolder;
         bool filling, hadComment;
@@ -783,17 +829,20 @@ namespace AlmImageUploader
             var copyRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
             copyRow.Controls.AddRange(new Control[] { chkCopyFromCases, chkCopyImagesOnly });
             extra.Controls.Add(copyRow, 1, 2);
-            chkLinks = new CheckBox { Text = "Test case attachments in the comment", AutoSize = true, Margin = new Padding(3, 4, 0, 0) };
-            chkPictures = new CheckBox { Text = "as pictures", AutoSize = true, Margin = new Padding(8, 4, 0, 0), Checked = true, Enabled = false };
+            chkLinks = new CheckBox { Text = "Test case attachments in comment:", AutoSize = true, Margin = new Padding(3, 4, 0, 0) };
+            // pictures in the comment: work without an ALM login; read from ALM: need one; links: names only
+            cboPictures = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 142, Margin = new Padding(4, 1, 0, 0), Enabled = false };
+            cboPictures.Items.AddRange(new object[] { PicturesEmbedded, PicturesFromAlm, PicturesAsLinks });
+            cboPictures.SelectedIndex = 0;
             chkLinks.CheckedChanged += (s, e) =>
             {
-                chkPictures.Enabled = chkLinks.Checked;
+                cboPictures.Enabled = chkLinks.Checked;
                 probeLinks = chkLinks.Checked;
                 if (chkLinks.Checked && (cases.Any(c => c.Atts == null) || client.AttachmentLinkFormat == null)) LoadCaseAttachments(); else Fill();
             };
-            chkPictures.CheckedChanged += (s, e) => Fill();
+            cboPictures.SelectedIndexChanged += (s, e) => Fill();
             var linkRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
-            linkRow.Controls.AddRange(new Control[] { chkLinks, chkPictures });
+            linkRow.Controls.AddRange(new Control[] { chkLinks, cboPictures });
             extra.Controls.Add(linkRow, 0, 2);
             extra.SetColumnSpan(copyRow, 2);
             extra.RowCount = 3;
@@ -1314,7 +1363,13 @@ namespace AlmImageUploader
                             Url = client.AttachmentUrl("test-instances", c.Inst.Id, a), Name = a.Name, CaseId = c.Inst.Id, Att = a,
                             CaseText = c.SetPath + " > " + c.Inst.Label + " (test case " + c.Inst.Id + ")",
                         }))
-                        .Select(l => { l.Picture = chkPictures.Checked && l.IsImage; return l; }).ToList();
+                        .Select(l =>
+                        {
+                            var mode = (string)cboPictures.SelectedItem;
+                            l.Picture = mode != PicturesAsLinks && l.IsImage;
+                            l.Embed = mode == PicturesEmbedded;
+                            return l;
+                        }).ToList();
         }
 
         int NewLinks(DefectInfo d) { return LinksFor(d).Count(l => !DefectLinks.LinkThere(d.CommentNow, l.Url)); }
@@ -1558,7 +1613,27 @@ namespace AlmImageUploader
                                 var value = DefectLinks.AppendCommentHtml(d.CommentNow, user, body, DateTime.Now);
                                 client.UpdateEntity("defects", d.Id, new Dictionary<string, string> { { commentField, value } });
                                 d.CommentNow = value;
-                                parts.Add("comment added");
+                                int embedded = Regex.Matches(body, "src=\"data:image/").Count;
+                                if (embedded > 0)
+                                {
+                                    // does ALM keep pictures inside the text?
+                                    var back = client.GetByIds("defects", "id", new[] { d.Id }, new[] { "id", commentField }).FirstOrDefault();
+                                    string saved;
+                                    if (back != null && back.TryGetValue(commentField, out saved))
+                                    {
+                                        d.CommentNow = saved ?? "";
+                                        int kept = Regex.Matches(d.CommentNow, "data:image/").Count - Regex.Matches(value, "data:image/").Count + embedded;
+                                        if (kept < embedded)
+                                        {
+                                            parts.Add("comment added, but ALM removed " + (embedded - Math.Max(kept, 0)) + " of its " + embedded + " picture(s)");
+                                            Log("ALM did not keep the pictures inside the comment of defect " + d.Id
+                                                + ": choose 'pictures from ALM' or 'links only', or copy the attachments to the defects.");
+                                        }
+                                        else parts.Add("comment added (" + embedded + " picture(s))");
+                                    }
+                                    else parts.Add("comment added");
+                                }
+                                else parts.Add("comment added");
                             }
                         }
                         catch (Exception e)

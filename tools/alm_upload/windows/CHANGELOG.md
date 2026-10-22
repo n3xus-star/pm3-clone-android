@@ -1,5 +1,16 @@
 # ALM Image Uploader - changelog
 
+## 2.15.0
+- Change by defect, "Test case attachments in comment": pictures read from ALM only showed
+  where the viewer had an ALM REST login ("Authentication failed. Browser based
+  integrations ..."). New default "embedded pictures": a small JPEG of each picture (at most
+  400 x 400 px and 30 KB, which the ALM desktop client shows) is stored in the comment
+  itself, so it shows without logging in. "pictures from ALM" and "links only" are still
+  there. After writing, the comment is read back; if ALM removed the pictures the result
+  and the log say so.
+- Every attachment link now ends with "login-form-required=y": opened without an ALM login,
+  ALM shows its login form first and then the file.
+
 ## 2.14.0
 - Change by defect: new "Defect Assigned To" in step 2. Choose a user of the project (the
   list shows "Full Name (login)"; typing finds them) to set on every defect. An imported list
