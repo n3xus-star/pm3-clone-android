@@ -102,7 +102,7 @@ namespace AlmImageUploader
         public class Response
         {
             public int Status;
-            public string Body;
+            public string Body, ContentType = "";
             public byte[] Bytes;
         }
 
@@ -145,6 +145,7 @@ namespace AlmImageUploader
             using (wr)
             {
                 resp.Status = (int)wr.StatusCode;
+                resp.ContentType = wr.ContentType ?? "";
                 using (var ms = new MemoryStream())
                 {
                     wr.GetResponseStream().CopyTo(ms);
@@ -350,8 +351,67 @@ namespace AlmImageUploader
         /// Web address of one attachment's file (opens in a browser that is logged in to ALM).
         public string AttachmentUrl(string entity, string id, Attachment att)
         {
-            return att.Id != "" ? Rest("attachments") + "/" + att.Id + "?alt=application/octet-stream"
-                                : Rest(entity) + "/" + id + "/attachments/" + Uri.EscapeDataString(att.Name);
+            var format = AttachmentLinkFormat ?? LinkFormats[0];
+            if (format.Contains("{4}") && att.Id == "") format = LinkFormats[0];
+            return string.Format(format, Rest("").TrimEnd('/'), entity, id, Uri.EscapeDataString(att.Name), att.Id);
+        }
+
+        /// How a link to an attachment's file is written ({0} project REST address, {1} entity, {2} its id,
+        /// {3} file name, {4} attachment id). Set by FindAttachmentLink; ALM versions differ in which
+        /// one returns the file itself to a browser instead of the attachment's details (XML).
+        public string AttachmentLinkFormat;
+
+        public static readonly string[] LinkFormats =
+        {
+            "{0}/{1}/{2}/attachments/{3}?alt=application/octet-stream",
+            "{0}/attachments/{4}?alt=application/octet-stream",
+            "{0}/{1}/{2}/attachments/{3}?alt=application%2Foctet-stream",
+            "{0}/attachments/{4}?alt=application%2Foctet-stream",
+            "{0}/{1}/{2}/attachments/{3}",
+            "{0}/attachments/{4}",
+        };
+
+        // what a browser (Edge / Chrome) and the ALM desktop client (Internet Explorer) ask for
+        static readonly string[] BrowserAccepts =
+        {
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "text/html, application/xhtml+xml, image/jxr, */*",
+        };
+
+        /// Tries every link format the way a browser opens a link and keeps the first one that returns
+        /// the attachment's file (the same bytes as a download). Returns false when none does.
+        public bool FindAttachmentLink(string entity, string id, Attachment att, Action<string> log)
+        {
+            var expected = DownloadAttachment(entity, id, att);
+            var tried = new List<string>();
+            string half = null;
+            for (int f = 0; f < LinkFormats.Length; f++)
+            {
+                if (LinkFormats[f].Contains("{4}") && att.Id == "") continue;
+                var url = string.Format(LinkFormats[f], Rest("").TrimEnd('/'), entity, id, Uri.EscapeDataString(att.Name), att.Id);
+                int good = 0;
+                var seen = new List<string>();
+                foreach (var accept in BrowserAccepts)
+                {
+                    var r = Send("GET", url, null, null, null, true, accept);
+                    bool same = r.Status == 200 && r.Bytes != null && r.Bytes.SequenceEqual(expected);
+                    if (same) good++;
+                    seen.Add(same ? "file" : "HTTP " + r.Status + " " + (r.ContentType == "" ? "" : r.ContentType.Split(';')[0]));
+                }
+                tried.Add("format " + (f + 1) + ": " + string.Join(" / ", seen.Distinct()));
+                if (good == BrowserAccepts.Length) { AttachmentLinkFormat = LinkFormats[f]; log("Attachment links: format " + (f + 1) + " opens the file (" + url + ")"); return true; }
+                if (good > 0 && half == null) half = LinkFormats[f];
+            }
+            if (half != null)
+            {
+                AttachmentLinkFormat = half;
+                log("Attachment links: only some browsers get the file; using format " + (Array.IndexOf(LinkFormats, half) + 1) + ".  " + string.Join(";  ", tried));
+                return true;
+            }
+            AttachmentLinkFormat = LinkFormats[0];
+            log("Attachment links: ALM did not return the file through any link (" + string.Join(";  ", tried) + ").  "
+                + "The links may show the attachment's details instead - use 'Copy the test cases' own attachments to their defects'.");
+            return false;
         }
 
         /// Download one attachment's file content.

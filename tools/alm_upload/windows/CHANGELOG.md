@@ -1,5 +1,12 @@
 # ALM Image Uploader - changelog
 
+## 2.13.1
+- Change by defect: attachment links in the defect comment opened the attachment's details
+  (XML) instead of the file on ALM 25.1. The program now tries six link formats the way a
+  browser and the ALM desktop client open a link, and uses the first one that returns the
+  file itself (checked against a real download). The log says which one, or, when none
+  works, what ALM returned for each.
+
 ## 2.13.0
 - Change by defect: "Test case attachments in the comment" (was: links) with "as pictures".
   The pictures of the ticked test cases are shown in the defect's comment, small (at most

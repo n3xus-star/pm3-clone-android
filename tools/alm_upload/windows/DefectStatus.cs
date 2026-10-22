@@ -770,7 +770,8 @@ namespace AlmImageUploader
             chkLinks.CheckedChanged += (s, e) =>
             {
                 chkPictures.Enabled = chkLinks.Checked;
-                if (chkLinks.Checked && cases.Any(c => c.Atts == null)) LoadCaseAttachments(); else Fill();
+                probeLinks = chkLinks.Checked;
+                if (chkLinks.Checked && (cases.Any(c => c.Atts == null) || client.AttachmentLinkFormat == null)) LoadCaseAttachments(); else Fill();
             };
             chkPictures.CheckedChanged += (s, e) => Fill();
             var linkRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
@@ -1016,6 +1017,7 @@ namespace AlmImageUploader
             var lists = forAll.Select(kv => kv.Key).Concat(listFields).Where(f => f.ListId != "").Select(f => f.ListId).Distinct().ToList();
             List<DefectCase> found = null;
             bool copyAtts = chkCopyFromCases.Checked || chkLinks.Checked;
+            probeLinks = chkLinks.Checked;
             lblSummary.Text = string.Format("Reading {0} defect(s) and their links from ALM...", ids.Count);
             btnFind.Enabled = btnApply.Enabled = false;
             Run(() =>
@@ -1160,11 +1162,31 @@ namespace AlmImageUploader
                 catch (AlmException e) { Log("Could not read the attachments of defect " + d.Id + ": " + e.Message); }
             }
             Log(string.Format("Read the attachments of {0} test case(s): {1} file(s).", list.Count, list.Sum(c => c.Atts.Count)));
+            if (probeLinks) ProbeLinks(list);
+        }
+
+        volatile bool probeLinks;
+
+        /// Finds once which link format opens an attachment's file in this ALM.
+        void ProbeLinks(List<DefectCase> list)
+        {
+            if (client.AttachmentLinkFormat != null) return;
+            var c = list.FirstOrDefault(x => x.Atts != null && x.Atts.Count > 0);
+            if (c == null) return;
+            // a small file is quicker to try
+            var att = c.Atts.OrderBy(a => a.Size < 0 ? long.MaxValue : a.Size).First();
+            try { client.FindAttachmentLink("test-instances", c.Inst.Id, att, Log); }
+            catch (Exception e)
+            {
+                if (!(e is AlmException || e is WebException)) throw;
+                Log("Attachment links: could not try the link formats: " + e.Message);
+            }
         }
 
         void LoadCaseAttachments()
         {
             if (Busy || cases.Count == 0) return;
+            probeLinks = chkLinks.Checked;
             var list = cases;
             var defectList = defects;
             lblSummary.Text = "Reading the attachments of the test cases...";
