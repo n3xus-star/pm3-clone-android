@@ -547,7 +547,8 @@ namespace AlmImageUploader
 
         /// Records a result the way ALM's own "fast run" does: a manual run with that status,
         /// which also sets the test case's status. Used when the status cannot be set directly.
-        public void CreateRun(TestInstance inst, string status)
+        /// Returns the new run's id ("" when ALM does not say).
+        public string CreateRun(TestInstance inst, string status)
         {
             var values = new Dictionary<string, string>
             {
@@ -557,6 +558,45 @@ namespace AlmImageUploader
             };
             var r = Send("POST", Rest("runs"), EntityXml("run", values), "application/xml", null, true);
             Check(r, "create a run for test case " + inst.Id);
+            var m = Regex.Match(r.Body ?? "", @"<Field\s+Name=""id""[^>]*>\s*<Value>\s*(\d+)\s*</Value>", RegexOptions.IgnoreCase);
+            return m.Success ? m.Groups[1].Value : "";
+        }
+
+        /// The test case's status in ALM now.
+        public string ReadStatus(string instanceId)
+        {
+            var d = GetByIds("test-instances", "id", new[] { instanceId }, new[] { "id", "status" }).FirstOrDefault();
+            string v;
+            return d != null && d.TryGetValue("status", out v) ? v ?? "" : "";
+        }
+
+        /// Sets a test case's status and checks it in ALM after every try: directly; else through a run
+        /// with that status (like ALM's fast run); else by setting that run's status again, which is when
+        /// some ALM versions update the test case. Returns "" (direct) or "as a run"; throws when the
+        /// status in ALM still differs.
+        public string SetStatus(TestInstance inst, string status, Action<string> log = null)
+        {
+            Func<bool> done = () => string.Equals(ReadStatus(inst.Id), status, StringComparison.OrdinalIgnoreCase);
+            string why = null;
+            try
+            {
+                UpdateEntity("test-instances", inst.Id, new Dictionary<string, string> { { "status", status } });
+                if (done()) return "";
+                why = "ALM accepted the status but did not change it";
+            }
+            catch (AlmException e) { why = e.Message; }
+            if (log != null) log("   test case " + inst.Id + ": status not set directly (" + why + ") - adding a run");
+            var run = CreateRun(inst, status);
+            if (done()) return "as a run";
+            if (run != "")
+            {
+                // ALM updates the test case when a run's status changes
+                UpdateEntity("runs", run, new Dictionary<string, string> { { "status", "Not Completed" } });
+                UpdateEntity("runs", run, new Dictionary<string, string> { { "status", status } });
+                if (done()) return "as a run";
+            }
+            throw new AlmException(string.Format("ALM did not change the status: still '{0}' after setting it directly and through run {1}",
+                                                 ReadStatus(inst.Id), run == "" ? "(no id)" : run));
         }
 
         public static string QueryValue(string name)

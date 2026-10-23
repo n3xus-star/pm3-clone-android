@@ -634,16 +634,8 @@ namespace AlmImageUploader
             if (c.New.TryGetValue("status", out status))
             {
                 var label = defs.ContainsKey("status") ? defs["status"].Label : "Status";
-                try
-                {
-                    client.UpdateEntity("test-instances", c.Inst.Id, new Dictionary<string, string> { { "status", status } });
-                    done.Add(label);
-                }
-                catch (AlmException)
-                {
-                    client.CreateRun(c.Inst, status);
-                    done.Add(label + " (as a run)");
-                }
+                var how = client.SetStatus(c.Inst, status);
+                done.Add(label + (how == "" ? "" : " (" + how + ")"));
                 c.Current["status"] = status;
             }
             c.New.Clear();
@@ -1020,6 +1012,17 @@ namespace AlmImageUploader
             Replan();
         }
 
+        /// A field and value chosen above "Add >" but not added: the change people most likely meant.
+        string PendingChoice()
+        {
+            var f = cboField.SelectedItem as AlmClient.FieldDef;
+            if (f == null) return null;
+            if (f.ListId != "" ? cboValue.SelectedItem == null : cboValue.Text.Trim() == "") return null;
+            var value = cboValue.Text == "(empty)" ? "" : cboValue.Text;
+            if (forAll.Any(kv => kv.Key.Name == f.Name && kv.Value == value)) return null;
+            return f.Label + " = " + Disp(value);
+        }
+
         void RemoveChange()
         {
             if (Busy || lstChanges.SelectedIndex < 0) return;
@@ -1081,6 +1084,12 @@ namespace AlmImageUploader
             if (Busy || defs == null) return;
             var ids = DefectLinks.ParseIds(txtIds.Text);
             if (ids.Count == 0) return;
+            var pending = PendingChoice();
+            if (pending != null && forAll.Count == 0)
+            {
+                AddChange();
+                Log("Added the change " + pending + " (it was chosen but 'Add >' was not pressed).");
+            }
             var wanted = ids.Select(id => new DefectInfo { Id = id }).ToList();
             var listFields = new List<AlmClient.FieldDef>();
             if (listFile != null)
@@ -1474,7 +1483,7 @@ namespace AlmImageUploader
             if (defects.Count == 0) { UpdateButtons(); return; }
             int change = cases.Count(Wanted), same = cases.Count(c => c.Ticked && c.Error == null && !Wanted(c)),
                 unticked = cases.Count(c => c.Error == null && !c.Ticked),
-                bad = cases.Count(c => c.Error != null) + defects.Count(d => d.Problem != null) + defects.Count(d => DefectActive(d) && OwnerError(d)),
+                bad = cases.Count(c => c.Error != null || c.Result.Contains("FAILED")) + defects.Count(d => d.Problem != null || d.Result.Contains("FAILED")) + defects.Count(d => DefectActive(d) && OwnerError(d)),
                 defectUpdates = defects.Count(DefectWanted);
             lblSummary.Text = string.Format("{0} defect(s), {1} linked test case(s):   {2} to change,   {6} defect(s) to update,   {3} with nothing to do,   {4} not ticked,   {5} problem(s) (red).",
                                             defects.Count, cases.Count, change, same, unticked, bad, defectUpdates)
@@ -1521,6 +1530,10 @@ namespace AlmImageUploader
         protected void DoApply()
         {
             if (Busy || defs == null) return;
+            var pending = PendingChoice();
+            if (pending != null && Confirm("You chose " + pending + " but did not press 'Add >'." + Environment.NewLine + Environment.NewLine
+                                           + "Add it to the changes before writing to ALM?"))
+                AddChange();
             var todo = cases.Where(Wanted).ToList();
             var caseFiles = todo.ToDictionary(c => c, CaseFiles);
             var defTodo = defects.Where(DefectWanted).ToList();

@@ -1024,16 +1024,8 @@ namespace AlmImageUploader
             }
             if (status && r.StatusChanges)
             {
-                try
-                {
-                    client.UpdateEntity("test-instances", r.Target.Id, new Dictionary<string, string> { { f.Status.Name, r.NewStatus } });
-                    done.Add(f.Status.Label);
-                }
-                catch (AlmException)
-                {
-                    client.CreateRun(r.Target, r.NewStatus);
-                    done.Add(f.Status.Label + " (as a run)");
-                }
+                var how = client.SetStatus(r.Target, r.NewStatus);
+                done.Add(f.Status.Label + (how == "" ? "" : " (" + how + ")"));
             }
             return done.Count == 0 ? "no change" : "updated " + string.Join(" + ", done);
         }

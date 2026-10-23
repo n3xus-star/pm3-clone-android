@@ -1,5 +1,14 @@
 # ALM Image Uploader - changelog
 
+## 2.16.1
+- Status of the test cases (Change by defect and Import results): the status is now read
+  back from ALM after every try. When ALM accepts the change but does not apply it, a run with
+  that status is added; when the run does not update the test case either, the run's status is
+  set again (ALM updates the test case when a run's status changes). Only a status that is
+  really in ALM is reported as "updated"; otherwise the row says FAILED with the status ALM has.
+- Change by defect: a field and value chosen but not added with "Add >" are added on Find
+  (the log says so), and Apply asks whether to add them.
+
 ## 2.16.0
 - Change by defect: new "Delete defect comments..." for the defect IDs in the box. It splits
   each defect's Comments into its comments ("____" line, "user, date:" and the text) and lists
