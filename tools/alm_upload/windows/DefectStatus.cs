@@ -45,6 +45,9 @@ namespace AlmImageUploader
         public readonly Dictionary<string, string> New = new Dictionary<string, string>();
         public string Error, Result = "";
         public bool Ticked = true;
+        /// How the defects are linked to it, as ALM's Linked Entities tab shows them,
+        /// e.g. "Test Instance 32682" or "Run 7101" (a run of this test case).
+        public readonly List<string> Via = new List<string>();
         /// The test case's own attachments in ALM (null until read), to copy to its defects.
         public List<AlmClient.Attachment> Atts;
         public readonly HashSet<string> UploadedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -82,7 +85,7 @@ namespace AlmImageUploader
 
     public static class DefectLinks
     {
-        static readonly string[] LinkFields = { "id", "first-endpoint-id", "second-endpoint-id", "second-endpoint-type" };
+        static readonly string[] LinkFields = { "id", "first-endpoint-id", "first-endpoint-type", "second-endpoint-id", "second-endpoint-type" };
         static readonly string[] IdTitles = { "defect id", "defect", "defects", "defect no", "defect number", "defect #", "bug id", "bug", "id" };
 
         /// Defect IDs typed or pasted: any numbers, separated by commas, spaces or new lines.
@@ -194,6 +197,36 @@ namespace AlmImageUploader
         /// list ("{first-endpoint-id[1,2,3]}", not "1 OR 2"); when that fails, one defect at a time.
         static List<Dictionary<string, string>> ReadLinks(AlmClient client, List<DefectInfo> found, Action<string> log)
         {
+            var links = ReadLinksFrom(client, found, log);
+            // links made from the test case's side may hold the defect as their second end
+            var ids = found.Select(d => d.Id).Distinct().ToList();
+            var known = new HashSet<string>(links.Select(l => Get(l, "id")).Where(x => x != ""));
+            Func<Dictionary<string, string>, bool> fresh = l => IsDefect(Get(l, "second-endpoint-type")) && (Get(l, "id") == "" || known.Add(Get(l, "id")));
+            try
+            {
+                for (int n = 0; n < ids.Count; n += 50)
+                    links.AddRange(client.GetEntities("defect-links", "{second-endpoint-id[" + string.Join(",", ids.Skip(n).Take(50)) + "]}", LinkFields).Where(fresh));
+            }
+            catch (AlmException) { }   // not supported here
+            // other ALM versions want "1 OR 2": ask again for the defects that have no link yet
+            var none = ids.Where(id => !links.Any(l => Get(l, "first-endpoint-id") == id || Get(l, "second-endpoint-id") == id)).ToList();
+            if (none.Count > 0)
+            {
+                try { links.AddRange(client.GetByIds("defect-links", "second-endpoint-id", none, LinkFields).Where(fresh)); }
+                catch (AlmException) { }
+            }
+            return links;
+        }
+
+        static bool IsDefect(string type)
+        {
+            var k = Kind(type);
+            return k == "defect" || k == "defects" || k == "bug";
+        }
+
+        /// The links that start at the defects.
+        static List<Dictionary<string, string>> ReadLinksFrom(AlmClient client, List<DefectInfo> found, Action<string> log)
+        {
             var links = new List<Dictionary<string, string>>();
             var ids = found.Select(d => d.Id).Distinct().ToList();
             try
@@ -276,16 +309,38 @@ namespace AlmImageUploader
                 if (!map.TryGetValue(defect, out l)) map[defect] = l = new List<string>();
                 if (!l.Contains(id)) l.Add(id);
             };
+            // defect|test case -> the linked entities that lead to it; defect|run -> how the run was reached
+            var via = new Dictionary<string, List<string>>();
+            var runVia = new Dictionary<string, string>();
+            Action<string, string, string> addVia = (defect, inst, text) =>
+            {
+                List<string> l;
+                if (!via.TryGetValue(defect + "|" + inst, out l)) via[defect + "|" + inst] = l = new List<string>();
+                if (!l.Contains(text)) l.Add(text);
+            };
+            // each link as (defect, the other end): the defect is usually the first end, sometimes the second
+            var ends = new List<Tuple<DefectInfo, string, string>>();
             foreach (var l in links)
             {
                 DefectInfo d;
-                if (!byId.TryGetValue(Get(l, "first-endpoint-id"), out d)) continue;
-                var other = Get(l, "second-endpoint-id");
-                var kind = Kind(Get(l, "second-endpoint-type"));
-                if (kind == "instance") add(instOf, d.Id, other);
-                else if (kind == "run") add(runOf, d.Id, other);
+                string firstType = Get(l, "first-endpoint-type");
+                if ((firstType == "" || IsDefect(firstType)) && byId.TryGetValue(Get(l, "first-endpoint-id"), out d))
+                    ends.Add(Tuple.Create(d, Get(l, "second-endpoint-type"), Get(l, "second-endpoint-id")));
+                else if (IsDefect(Get(l, "second-endpoint-type")) && byId.TryGetValue(Get(l, "second-endpoint-id"), out d))
+                    ends.Add(Tuple.Create(d, firstType, Get(l, "first-endpoint-id")));
+            }
+            if (ends.Count > 0)
+                log("Linked entities of the defects: " + string.Join(", ", ends.GroupBy(e => e.Item2)
+                                                                          .Select(g => (g.Key == "" ? "(no type)" : g.Key) + " " + g.Count())));
+            foreach (var e in ends)
+            {
+                var d = e.Item1;
+                var other = e.Item3;
+                var kind = Kind(e.Item2);
+                if (kind == "instance") { add(instOf, d.Id, other); addVia(d.Id, other, "Test Instance " + other); }
+                else if (kind == "run") { add(runOf, d.Id, other); runVia[d.Id + "|" + other] = "Run " + other; }
                 else if (kind == "step") add(stepOf, d.Id, other);
-                else if (kind != "defect" && kind != "bug") d.LinkedTo.Add(kind + " " + other);
+                else if (!IsDefect(e.Item2)) d.LinkedTo.Add((e.Item2 == "" ? "(no type)" : e.Item2) + " " + other);
             }
             if (stepOf.Count > 0)
             {
@@ -295,7 +350,11 @@ namespace AlmImageUploader
                     foreach (var s in kv.Value)
                     {
                         string run;
-                        if (runOfStep.TryGetValue(s, out run) && run != "") add(runOf, kv.Key, run);
+                        if (runOfStep.TryGetValue(s, out run) && run != "")
+                        {
+                            add(runOf, kv.Key, run);
+                            if (!runVia.ContainsKey(kv.Key + "|" + run)) runVia[kv.Key + "|" + run] = "Run Step " + s + " (run " + run + ")";
+                        }
                     }
             }
             if (runOf.Count > 0)
@@ -305,8 +364,12 @@ namespace AlmImageUploader
                 foreach (var kv in runOf)
                     foreach (var r in kv.Value)
                     {
-                        string inst;
-                        if (instOfRun.TryGetValue(r, out inst) && inst != "") add(instOf, kv.Key, inst);
+                        string inst, how;
+                        if (instOfRun.TryGetValue(r, out inst) && inst != "")
+                        {
+                            add(instOf, kv.Key, inst);
+                            addVia(kv.Key, inst, runVia.TryGetValue(kv.Key + "|" + r, out how) ? how : "Run " + r);
+                        }
                     }
             }
 
@@ -372,6 +435,9 @@ namespace AlmImageUploader
                         cases[id] = c;
                     }
                     if (!c.Defects.Contains(d)) c.Defects.Add(d);
+                    List<string> how;
+                    if (via.TryGetValue(d.Id + "|" + id, out how))
+                        foreach (var h in how) if (!c.Via.Contains(h)) c.Via.Add(h);
                 }
             }
             foreach (var d in defects)
@@ -866,10 +932,13 @@ namespace AlmImageUploader
 
             lv = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, CheckBoxes = true };
             lv.Columns.Add("Defect", 80);
-            lv.Columns.Add("Defect summary", 190);
-            lv.Columns.Add("Defect status", 90);
-            lv.Columns.Add("Test set", 210);
-            lv.Columns.Add("Test case", 170);
+            lv.Columns.Add("Defect summary", 160);
+            lv.Columns.Add("Defect status", 85);
+            lv.Columns.Add("Linked entity", 150);
+            lv.Columns.Add("Test case ID", 85);
+            lv.Columns.Add("Test set", 200);
+            lv.Columns.Add("Test case", 160);
+            lv.Columns.Add("Status now", 85);
             lv.Columns.Add("Changes", 300);
             lv.Columns.Add("Defect update", 170);
             lv.Columns.Add("Result", 220);
@@ -1449,7 +1518,8 @@ namespace AlmImageUploader
             foreach (var d in defects.Where(d => d.Problem != null))
             {
                 if (show == 1) continue;
-                var it = new ListViewItem(new[] { d.Id, d.Summary, d.Status, "", "", "", "", d.Problem }) { Tag = d, ForeColor = Color.Firebrick };
+                var it = new ListViewItem(new[] { d.Id, d.Summary, d.Status, string.Join(", ", d.LinkedTo), "", "", "", "", "", "", d.Problem })
+                         { Tag = d, ForeColor = Color.Firebrick };
                 lv.Items.Add(it);
             }
             foreach (var c in cases)
@@ -1465,7 +1535,7 @@ namespace AlmImageUploader
                 var it = new ListViewItem(new[]
                 {
                     c.DefectIds, d0.Summary + (c.Defects.Count > 1 ? "  (+" + (c.Defects.Count - 1) + ")" : ""), d0.Status,
-                    c.SetPath, c.Inst.Label, ChangeText(c), defectText,
+                    string.Join(", ", c.Via), c.Inst.Id, c.SetPath, c.Inst.Label, c.Now("status"), ChangeText(c), defectText,
                     c.Error ?? (problem || (updated && !wanted) ? c.Result
                                 : wanted ? "will change" : c.Ticked ? "no change" : "not ticked"),
                 }) { Tag = c, Checked = c.Ticked && c.Error == null };

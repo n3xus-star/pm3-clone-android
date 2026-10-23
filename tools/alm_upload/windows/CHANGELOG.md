@@ -1,5 +1,12 @@
 # ALM Image Uploader - changelog
 
+## 2.17.0
+- Change by defect: the list shows each defect's linked entity as ALM's Linked Entities tab does
+  ("Test Instance 32682", "Run 7101", "Run Step 8001 (run 7102)"), the ID of the test case
+  whose status changes, and its status now. Links to other entities (e.g. a test in Test Plan)
+  are shown with their type and ID; the log lists the types of all links found.
+- Links made from the test case's side (the defect as the link's second end) are found too.
+
 ## 2.16.1
 - Status of the test cases (Change by defect and Import results): the status is now read
   back from ALM after every try. When ALM accepts the change but does not apply it, a run with
