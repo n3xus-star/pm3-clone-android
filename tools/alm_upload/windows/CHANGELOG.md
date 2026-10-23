@@ -1,5 +1,13 @@
 # ALM Image Uploader - changelog
 
+## 2.18.0
+- Change by defect: the IDs can be "Defect IDs" or "Link IDs" (the Link ID column of a defect's
+  Linked Entities tab). With Link IDs each link gives its defect and the one entity it links,
+  e.g. link 3453 -> defect 3830 -> Test Instance 32682. Links are read together, else one by one
+  ("defect-links/<id>"); Link IDs ALM does not have are listed in the log.
+- The Linked entity column shows the Link ID too, e.g. "Test Instance 32682  (link 3453)".
+- A defect without any link says that its number may be a Link ID.
+
 ## 2.17.1
 - Windows fit on the screen: with display scaling (e.g. 150%) the dialogs were taller than the
   screen (title bar and buttons hidden). Every window is now kept inside the screen, and the

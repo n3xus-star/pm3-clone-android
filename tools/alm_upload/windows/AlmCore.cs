@@ -272,6 +272,25 @@ namespace AlmImageUploader
             }
         }
 
+        /// One entity by its id, e.g. GetEntity("defect-links", "3453"); null when ALM does not have it.
+        public Dictionary<string, string> GetEntity(string collection, string id)
+        {
+            var r = Send("GET", Rest(collection) + "/" + Uri.EscapeDataString(id), null, null, null, true);
+            if (r.Status == 404) return null;
+            Check(r, "read " + collection + " " + id);
+            var doc = new XmlDocument();
+            doc.LoadXml(r.Body);
+            var e = doc.DocumentElement.Name == "Entity" ? doc.DocumentElement : doc.GetElementsByTagName("Entity").Cast<XmlElement>().FirstOrDefault();
+            if (e == null) return null;
+            var d = new Dictionary<string, string>();
+            foreach (XmlElement f in e.GetElementsByTagName("Field"))
+            {
+                var v = f.GetElementsByTagName("Value");
+                d[f.GetAttribute("Name")] = v.Count > 0 ? v[0].InnerText : "";
+            }
+            return d;
+        }
+
         public List<Dictionary<string, string>> GetByIds(string collection, string field,
                                                           IEnumerable<string> ids, string[] fields)
         {

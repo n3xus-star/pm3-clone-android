@@ -88,7 +88,7 @@ namespace AlmImageUploader
     public static class DefectLinks
     {
         static readonly string[] LinkFields = { "id", "first-endpoint-id", "first-endpoint-type", "second-endpoint-id", "second-endpoint-type" };
-        static readonly string[] IdTitles = { "defect id", "defect", "defects", "defect no", "defect number", "defect #", "bug id", "bug", "id" };
+        static readonly string[] IdTitles = { "defect id", "defect", "defects", "defect no", "defect number", "defect #", "bug id", "bug", "link id", "id" };
 
         /// Defect IDs typed or pasted: any numbers, separated by commas, spaces or new lines.
         public static List<string> ParseIds(string text)
@@ -239,6 +239,41 @@ namespace AlmImageUploader
             return links;
         }
 
+        /// Links by their Link ID (as ALM's Linked Entities tab shows it): asked for together
+        /// ("{id[1,2,3]}"), then each one that is still missing on its own ("defect-links/<id>").
+        public static List<Dictionary<string, string>> ReadLinksById(AlmClient client, List<string> ids, Action<string> log)
+        {
+            var links = new List<Dictionary<string, string>>();
+            try
+            {
+                for (int n = 0; n < ids.Count; n += 50)
+                    links.AddRange(client.GetEntities("defect-links", "{id[" + string.Join(",", ids.Skip(n).Take(50)) + "]}", LinkFields));
+            }
+            catch (AlmException e) { log("Reading the links together did not work (" + e.Message + "); reading them one by one."); links.Clear(); }
+            foreach (var id in ids.Where(i => !links.Any(l => Get(l, "id") == i)).ToList())
+            {
+                try
+                {
+                    var l = client.GetEntity("defect-links", id);
+                    if (l != null) { if (Get(l, "id") == "") l["id"] = id; links.Add(l); }
+                }
+                catch (Exception e)
+                {
+                    if (!(e is AlmException || e is System.Xml.XmlException)) throw;
+                    log("Could not read link " + id + ": " + e.Message);
+                }
+            }
+            return links;
+        }
+
+        /// The defect at one end of a link ("" when neither end is a defect).
+        public static string DefectOf(Dictionary<string, string> link)
+        {
+            var firstType = Get(link, "first-endpoint-type");
+            if (firstType == "" || IsDefect(firstType)) return Get(link, "first-endpoint-id");
+            return IsDefect(Get(link, "second-endpoint-type")) ? Get(link, "second-endpoint-id") : "";
+        }
+
         static bool IsDefect(string type)
         {
             var k = Kind(type);
@@ -302,7 +337,8 @@ namespace AlmImageUploader
         /// Reads the defects, their links, and the test cases the links lead to (directly, or through a
         /// run / run step of the test case), with the current values of the given fields.
         public static List<DefectCase> Find(AlmClient client, List<DefectInfo> defects, IEnumerable<string> fields,
-                                            TestLabFolder lab, Action<string> log, string commentField = null, string ownerField = null)
+                                            TestLabFolder lab, Action<string> log, string commentField = null, string ownerField = null,
+                                            List<Dictionary<string, string>> givenLinks = null)
         {
             var byId = defects.ToDictionary(d => d.Id);
             var defectFields = new[] { "id", "name", "status", commentField, ownerField }.Where(f => f != null).Distinct().ToArray();
@@ -318,7 +354,8 @@ namespace AlmImageUploader
             }
             var found = defects.Where(d => d.Found).ToList();
 
-            var links = ReadLinks(client, found, log);
+            // given links (Link IDs mode): only those; else all the links of the defects
+            var links = givenLinks ?? ReadLinks(client, found, log);
 
             // defect -> test instance ids, directly or through runs / steps
             var instOf = new Dictionary<string, List<string>>();
@@ -347,16 +384,24 @@ namespace AlmImageUploader
                     addVia(d.Id, inst, "Test Instance " + inst + " (given)");
                 }
             // each link as (defect, the other end): the defect is usually the first end, sometimes the second
-            var ends = new List<Tuple<DefectInfo, string, string>>();
+            var ends = new List<Tuple<DefectInfo, string, string, string>>();
             foreach (var l in links)
             {
                 DefectInfo d;
                 string firstType = Get(l, "first-endpoint-type");
                 if ((firstType == "" || IsDefect(firstType)) && byId.TryGetValue(Get(l, "first-endpoint-id"), out d))
-                    ends.Add(Tuple.Create(d, Get(l, "second-endpoint-type"), Get(l, "second-endpoint-id")));
+                    ends.Add(Tuple.Create(d, Get(l, "second-endpoint-type"), Get(l, "second-endpoint-id"), Get(l, "id")));
                 else if (IsDefect(Get(l, "second-endpoint-type")) && byId.TryGetValue(Get(l, "second-endpoint-id"), out d))
-                    ends.Add(Tuple.Create(d, firstType, Get(l, "first-endpoint-id")));
+                    ends.Add(Tuple.Create(d, firstType, Get(l, "first-endpoint-id"), Get(l, "id")));
             }
+            // the Link ID ALM shows in the Linked Entities tab, after each entity
+            var linkIdOf = new Dictionary<string, string>();
+            foreach (var e in ends) linkIdOf[e.Item1.Id + "|" + Kind(e.Item2) + "|" + e.Item3] = e.Item4;
+            Func<string, string, string, string> linkText = (defect, kind, id) =>
+            {
+                string v;
+                return linkIdOf.TryGetValue(defect + "|" + kind + "|" + id, out v) && v != "" ? "  (link " + v + ")" : "";
+            };
             if (links.Count > 0 && ends.Count == 0)
                 log("The links ALM returned do not name these defects as an end. First link: "
                     + string.Join(";  ", links[0].Select(kv => kv.Key + "=" + kv.Value)));
@@ -368,10 +413,10 @@ namespace AlmImageUploader
                 var d = e.Item1;
                 var other = e.Item3;
                 var kind = Kind(e.Item2);
-                if (kind == "instance") { add(instOf, d.Id, other); addVia(d.Id, other, "Test Instance " + other); }
-                else if (kind == "run") { add(runOf, d.Id, other); runVia[d.Id + "|" + other] = "Run " + other; }
+                if (kind == "instance") { add(instOf, d.Id, other); addVia(d.Id, other, "Test Instance " + other + linkText(d.Id, kind, other)); }
+                else if (kind == "run") { add(runOf, d.Id, other); runVia[d.Id + "|" + other] = "Run " + other + linkText(d.Id, kind, other); }
                 else if (kind == "step") add(stepOf, d.Id, other);
-                else if (!IsDefect(e.Item2)) d.LinkedTo.Add((e.Item2 == "" ? "(no type)" : e.Item2) + " " + other);
+                else if (!IsDefect(e.Item2)) d.LinkedTo.Add((e.Item2 == "" ? "(no type)" : e.Item2) + " " + other + linkText(d.Id, kind, other));
             }
             if (stepOf.Count > 0)
             {
@@ -384,7 +429,7 @@ namespace AlmImageUploader
                         if (runOfStep.TryGetValue(s, out run) && run != "")
                         {
                             add(runOf, kv.Key, run);
-                            if (!runVia.ContainsKey(kv.Key + "|" + run)) runVia[kv.Key + "|" + run] = "Run Step " + s + " (run " + run + ")";
+                            if (!runVia.ContainsKey(kv.Key + "|" + run)) runVia[kv.Key + "|" + run] = "Run Step " + s + " (run " + run + ")" + linkText(kv.Key, "step", s);
                         }
                     }
             }
@@ -479,7 +524,8 @@ namespace AlmImageUploader
                 if (!d.Found) d.Problem = "defect not found in ALM";
                 else if (d.LinkError != null) d.Problem = "could not read its links: " + d.LinkError;
                 else if (!cases.Values.Any(c => c.Defects.Contains(d)))
-                    d.Problem = "no linked test case in Test Lab" + (d.LinkedTo.Count > 0 ? " (linked to " + string.Join(", ", d.LinkedTo.Take(5)) + ")" : "");
+                    d.Problem = "no linked test case in Test Lab" + (d.LinkedTo.Count > 0 ? " (linked to " + string.Join(", ", d.LinkedTo.Take(5)) + ")"
+                                : givenLinks == null ? " - no links at all; if " + d.Id + " is a Link ID from the Linked Entities tab, choose \"Link IDs\"" : "");
             }
             return cases.Values.OrderBy(c => c.Order).ThenBy(c => c.SetPath, StringComparer.OrdinalIgnoreCase)
                         .ThenBy(c => c.Inst.Label, Comparer<string>.Create(Util.NaturalCompare)).ToList();
@@ -749,7 +795,10 @@ namespace AlmImageUploader
         readonly AlmClient client;
         readonly TestLabFolder lab;
         protected readonly TextBox txtIds;
-        protected readonly ComboBox cboField, cboValue, cboShow;
+        protected readonly ComboBox cboField, cboValue, cboShow, cboIdKind;
+        public const string IdsAreDefects = "Defect IDs", IdsAreLinks = "Link IDs";
+
+        bool LinkMode { get { return (string)cboIdKind.SelectedItem == IdsAreLinks; } }
         protected readonly ListBox lstChanges;
         protected readonly ListView lv;
         protected readonly Button btnFind, btnApply, btnStop, btnAdd, btnRemove, btnImportList, btnTickAll, btnUntickAll, btnDeleteComments;
@@ -804,7 +853,15 @@ namespace AlmImageUploader
             t.SetColumnSpan(head, 3);
 
             // 1. defect IDs
-            t.Controls.Add(new Label { Text = "1.  Defect IDs", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 1);
+            // the IDs are defect IDs, or Link IDs as ALM's Linked Entities tab shows them
+            cboIdKind = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 92, Margin = new Padding(14, 4, 3, 3) };
+            cboIdKind.Items.AddRange(new object[] { IdsAreDefects, IdsAreLinks });
+            cboIdKind.SelectedIndex = 0;
+            cboIdKind.SelectedIndexChanged += (s, e) => { ClearResults(); UpdateButtons(); };
+            var idHead = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0) };
+            idHead.Controls.Add(new Label { Text = "1.  IDs", AutoSize = true, Margin = new Padding(3, 7, 3, 0) });
+            idHead.Controls.Add(cboIdKind);
+            t.Controls.Add(idHead, 0, 1);
             txtIds = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Height = 48 };
             txtIds.TextChanged += (s, e) => UpdateButtons();
             t.Controls.Add(txtIds, 1, 1);
@@ -820,7 +877,8 @@ namespace AlmImageUploader
             side.Controls.AddRange(new Control[] { btnImportList, btnClear });
             t.Controls.Add(side, 2, 1);
             lblList = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 2, 3, 6), MaximumSize = new Size(820, 0),
-                                  Text = "Type or paste defect IDs (e.g. 1203, 1207 1210 or one per line), or import an Excel / CSV / text list. "
+                                  Text = "Type or paste defect IDs (e.g. 1203, 1207 1210 or one per line), or choose \"Link IDs\" to give the Link IDs of ALM's "
+                                       + "Linked Entities tab instead. Or import an Excel / CSV / text list. "
                                        + "To give the linked test case yourself, write defect=test case ID (e.g. 3453=32682) or add a \"Test case ID\" list column. "
                                        + "List columns named after a field (e.g. Status, Comments) give each defect its own value." };
             t.Controls.Add(lblList, 1, 2);
@@ -1224,6 +1282,9 @@ namespace AlmImageUploader
             var fields = UsableFields().Select(f => f.Name).ToList();
             var lists = forAll.Select(kv => kv.Key).Concat(listFields).Where(f => f.ListId != "").Select(f => f.ListId).Distinct().ToList();
             List<DefectCase> found = null;
+            bool byLink = LinkMode;
+            if (byLink && (listFile != null || DefectLinks.ParsePairs(txtIds.Text).Any(p => p.Value != null)))
+                Log("Link IDs: values from the list and \"=test case\" are not used (they belong to defect IDs).");
             bool copyAtts = chkCopyFromCases.Checked || chkLinks.Checked;
             probeLinks = chkLinks.Checked;
             lblSummary.Text = string.Format("Reading {0} defect(s) and their links from ALM...", ids.Count);
@@ -1238,7 +1299,21 @@ namespace AlmImageUploader
                     var vals = client.GetListValues(id);
                     lock (listValues) listValues[id] = vals;
                 }
-                found = DefectLinks.Find(client, wanted, fields, lab, Log, commentField, ownerField);
+                List<Dictionary<string, string>> given = null;
+                if (byLink)
+                {
+                    // Link IDs: each link gives its defect and the one entity it links
+                    given = DefectLinks.ReadLinksById(client, ids, Log);
+                    Func<Dictionary<string, string>, string, string> g = (l, k) => { string v; return l.TryGetValue(k, out v) ? v ?? "" : ""; };
+                    var missing = ids.Where(i => !given.Any(l => g(l, "id") == i)).ToList();
+                    if (missing.Count > 0) Log("Link ID(s) not found in ALM: " + string.Join(", ", missing));
+                    foreach (var l in given.Where(l => DefectLinks.DefectOf(l) == ""))
+                        Log("Link " + g(l, "id") + " joins no defect: " + string.Join(";  ", l.Select(kv => kv.Key + "=" + kv.Value)));
+                    var order = given.Select(DefectLinks.DefectOf).Where(x => x != "").Distinct().ToList();
+                    Log(string.Format("Link ID(s) {0}  ->  defect(s) {1}", string.Join(", ", ids), order.Count > 0 ? string.Join(", ", order) : "(none)"));
+                    wanted = order.Select(id => new DefectInfo { Id = id }).ToList();
+                }
+                found = DefectLinks.Find(client, wanted, fields, lab, Log, commentField, ownerField, given);
                 if (copyAtts) ReadAttachments(found, wanted);
                 Log(string.Format("{0} defect(s): {1} test case(s) linked, {2} defect(s) with a problem.",
                                   wanted.Count, found.Count, wanted.Count(d => d.Problem != null)));
@@ -1635,8 +1710,9 @@ namespace AlmImageUploader
         protected void OpenDeleteComments()
         {
             if (Busy || defs == null) return;
-            var ids = DefectLinks.ParseIds(txtIds.Text);
-            if (ids.Count == 0) return;
+            // Link IDs: the defects the links belong to, from the last Find
+            var ids = LinkMode ? defects.Where(d => d.Found).Select(d => d.Id).ToList() : DefectLinks.ParseIds(txtIds.Text);
+            if (ids.Count == 0) { Log(LinkMode ? "Press Find test cases first: the Link IDs are turned into defects there." : "Enter defect IDs first."); return; }
             using (var dlg = CreateDeleteDialog(ids))
             {
                 dlg.ShowDialog(this);
