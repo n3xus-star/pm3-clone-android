@@ -30,6 +30,8 @@ namespace AlmImageUploader
         public readonly List<string> LinkedTo = new List<string>();
         /// Values for this defect from the imported list, by field name, e.g. { "status": "Passed" }.
         public readonly Dictionary<string, string> ListValues = new Dictionary<string, string>();
+        /// Test cases (test instance ids) given by hand ("3453=32682" or a "Test case ID" list column).
+        public readonly List<string> ManualInstances = new List<string>();
     }
 
     /// One test case (test instance) linked to one or more of the defects.
@@ -91,8 +93,22 @@ namespace AlmImageUploader
         /// Defect IDs typed or pasted: any numbers, separated by commas, spaces or new lines.
         public static List<string> ParseIds(string text)
         {
-            return Regex.Matches(text ?? "", @"\d+").Cast<Match>().Select(m => m.Value.TrimStart('0'))
-                        .Where(v => v != "").Distinct().ToList();
+            return ParsePairs(text).Select(p => p.Key).Distinct().ToList();
+        }
+
+        /// "3453" or "3453=32682" (also 3453:32682, 3453>32682): a defect, and the test case (linked
+        /// entity) it belongs to when that is given by hand.
+        public static List<KeyValuePair<string, string>> ParsePairs(string text)
+        {
+            var list = new List<KeyValuePair<string, string>>();
+            foreach (Match m in Regex.Matches(text ?? "", @"(\d+)(?:\s*[=:>]\s*(\d+))?"))
+            {
+                var d = m.Groups[1].Value.TrimStart('0');
+                if (d == "") continue;
+                var t = m.Groups[2].Success ? m.Groups[2].Value.TrimStart('0') : null;
+                list.Add(new KeyValuePair<string, string>(d, t == "" ? null : t));
+            }
+            return list;
         }
 
         // ------------------------------------------------------------------ list files
@@ -198,23 +214,28 @@ namespace AlmImageUploader
         static List<Dictionary<string, string>> ReadLinks(AlmClient client, List<DefectInfo> found, Action<string> log)
         {
             var links = ReadLinksFrom(client, found, log);
+            int first = links.Count;
             // links made from the test case's side may hold the defect as their second end
             var ids = found.Select(d => d.Id).Distinct().ToList();
             var known = new HashSet<string>(links.Select(l => Get(l, "id")).Where(x => x != ""));
-            Func<Dictionary<string, string>, bool> fresh = l => IsDefect(Get(l, "second-endpoint-type")) && (Get(l, "id") == "" || known.Add(Get(l, "id")));
+            int seen = 0;
+            Func<Dictionary<string, string>, bool> fresh = l => { seen++; return IsDefect(Get(l, "second-endpoint-type")) && (Get(l, "id") == "" || known.Add(Get(l, "id"))); };
+            string second;
             try
             {
                 for (int n = 0; n < ids.Count; n += 50)
-                    links.AddRange(client.GetEntities("defect-links", "{second-endpoint-id[" + string.Join(",", ids.Skip(n).Take(50)) + "]}", LinkFields).Where(fresh));
+                    links.AddRange(client.GetEntities("defect-links", "{second-endpoint-id[" + string.Join(",", ids.Skip(n).Take(50)) + "]}", LinkFields).Where(fresh).ToList());
+                second = seen + " returned";
             }
-            catch (AlmException) { }   // not supported here
+            catch (AlmException e) { second = "not possible (" + e.Message + ")"; }
             // other ALM versions want "1 OR 2": ask again for the defects that have no link yet
             var none = ids.Where(id => !links.Any(l => Get(l, "first-endpoint-id") == id || Get(l, "second-endpoint-id") == id)).ToList();
             if (none.Count > 0)
             {
-                try { links.AddRange(client.GetByIds("defect-links", "second-endpoint-id", none, LinkFields).Where(fresh)); }
-                catch (AlmException) { }
+                try { seen = 0; links.AddRange(client.GetByIds("defect-links", "second-endpoint-id", none, LinkFields).Where(fresh).ToList()); second += ", again with OR: " + seen + " returned"; }
+                catch (AlmException e) { second += ", again with OR: not possible (" + e.Message + ")"; }
             }
+            log(string.Format("Defect links read from ALM: {0} with the defect as the first end; second end: {1}.", first, second));
             return links;
         }
 
@@ -318,6 +339,13 @@ namespace AlmImageUploader
                 if (!via.TryGetValue(defect + "|" + inst, out l)) via[defect + "|" + inst] = l = new List<string>();
                 if (!l.Contains(text)) l.Add(text);
             };
+            // test cases given by hand count as links to them
+            foreach (var d in defects)
+                foreach (var inst in d.ManualInstances)
+                {
+                    add(instOf, d.Id, inst);
+                    addVia(d.Id, inst, "Test Instance " + inst + " (given)");
+                }
             // each link as (defect, the other end): the defect is usually the first end, sometimes the second
             var ends = new List<Tuple<DefectInfo, string, string>>();
             foreach (var l in links)
@@ -329,6 +357,9 @@ namespace AlmImageUploader
                 else if (IsDefect(Get(l, "second-endpoint-type")) && byId.TryGetValue(Get(l, "second-endpoint-id"), out d))
                     ends.Add(Tuple.Create(d, firstType, Get(l, "first-endpoint-id")));
             }
+            if (links.Count > 0 && ends.Count == 0)
+                log("The links ALM returned do not name these defects as an end. First link: "
+                    + string.Join(";  ", links[0].Select(kv => kv.Key + "=" + kv.Value)));
             if (ends.Count > 0)
                 log("Linked entities of the defects: " + string.Join(", ", ends.GroupBy(e => e.Item2)
                                                                           .Select(g => (g.Key == "" ? "(no type)" : g.Key) + " " + g.Count())));
@@ -403,6 +434,9 @@ namespace AlmImageUploader
                 return string.Join("\\", parts);
             };
 
+            foreach (var d in defects)
+                foreach (var inst in d.ManualInstances.Where(i => !insts.ContainsKey(i)))
+                    d.LinkedTo.Add("test case " + inst + " (given) not found in Test Lab");
             var cases = new Dictionary<string, DefectCase>();
             var fieldList = fields.ToList();
             for (int k = 0; k < defects.Count; k++)
@@ -771,7 +805,7 @@ namespace AlmImageUploader
 
             // 1. defect IDs
             t.Controls.Add(new Label { Text = "1.  Defect IDs", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 1);
-            txtIds = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Height = 58 };
+            txtIds = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Height = 48 };
             txtIds.TextChanged += (s, e) => UpdateButtons();
             t.Controls.Add(txtIds, 1, 1);
             btnImportList = Btn("Import list...");
@@ -787,6 +821,7 @@ namespace AlmImageUploader
             t.Controls.Add(side, 2, 1);
             lblList = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 2, 3, 6), MaximumSize = new Size(820, 0),
                                   Text = "Type or paste defect IDs (e.g. 1203, 1207 1210 or one per line), or import an Excel / CSV / text list. "
+                                       + "To give the linked test case yourself, write defect=test case ID (e.g. 3453=32682) or add a \"Test case ID\" list column. "
                                        + "List columns named after a field (e.g. Status, Comments) give each defect its own value." };
             t.Controls.Add(lblList, 1, 2);
             t.SetColumnSpan(lblList, 2);
@@ -838,13 +873,13 @@ namespace AlmImageUploader
             extra.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             extra.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             extra.Controls.Add(new Label { Text = "Comment for the defects (optional, added with your name and date)", AutoSize = true }, 0, 0);
-            txtComment = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Height = 70, AcceptsReturn = true };
+            txtComment = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Height = 60, AcceptsReturn = true };
             txtComment.TextChanged += (s, e) =>
             {
                 bool has = txtComment.Text.Trim() != "";
                 if (has != hadComment) { hadComment = has; Fill(); }
             };
-            lstFiles = new ListBox { Dock = DockStyle.Fill, Height = 70, IntegralHeight = false, SelectionMode = SelectionMode.MultiExtended, HorizontalScrollbar = true };
+            lstFiles = new ListBox { Dock = DockStyle.Fill, Height = 60, IntegralHeight = false, SelectionMode = SelectionMode.MultiExtended, HorizontalScrollbar = true };
             lstFiles.SelectedIndexChanged += (s, e) => UpdateButtons();
             btnAddFiles = Btn("Add files...");
             btnFolder = Btn("Defect folder...");
@@ -973,12 +1008,12 @@ namespace AlmImageUploader
             t.SetColumnSpan(txtLog, 3);
             t.RowCount = 10;
             for (int i = 0; i < 6; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            t.RowStyles[4] = new RowStyle(SizeType.Absolute, 168);   // comment / attachments: room for the three buttons
+            t.RowStyles[4] = new RowStyle(SizeType.Absolute, 166);   // comment / attachments: room for the three buttons
             t.RowStyles.Add(new RowStyle(SizeType.Percent, 75));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
-            Controls.Add(t);
+            AddScrolling(t, new Size(980, 760));
             CancelButton = close;
             UpdateButtons();
             Shown += (s, e) => LoadFields();
@@ -1122,14 +1157,15 @@ namespace AlmImageUploader
             listFile = file;
             var have = DefectLinks.ParseIds(txtIds.Text);
             var added = file.Ids.Where(i => !have.Contains(i)).ToList();
-            txtIds.Text = string.Join(Environment.NewLine, have.Concat(added));
-            var used = file.Columns.Where(c => IsOwnerColumn(c) || FieldFor(c) != null).ToList();
+            var typed = txtIds.Text.TrimEnd();
+            txtIds.Text = typed + (typed != "" && added.Count > 0 ? Environment.NewLine : "") + string.Join(Environment.NewLine, added);
+            var used = file.Columns.Where(c => IsOwnerColumn(c) || IsInstanceColumn(c) || FieldFor(c) != null).ToList();
             var ignored = file.Columns.Except(used).ToList();
             Log(string.Format("Read {0} defect ID(s) from {1}{2}{3}", file.Ids.Count, Path.GetFileName(path),
                               used.Count > 0 ? ";  values per defect from the column(s): " + string.Join(", ", used) : "",
                               ignored.Count > 0 ? ";  ignored column(s): " + string.Join(", ", ignored) : ""));
             lblList.Text = string.Format("List: {0}  -  {1} defect ID(s){2}", Path.GetFileName(path), file.Ids.Count,
-                                         used.Count > 0 ? ",  own values from: " + string.Join(", ", used.Select(c => IsOwnerColumn(c) ? "defect " + ownerLabel : FieldFor(c).Label)) : "");
+                                         used.Count > 0 ? ",  own values from: " + string.Join(", ", used.Select(c => IsOwnerColumn(c) ? "defect " + ownerLabel : IsInstanceColumn(c) ? "test case ID" : FieldFor(c).Label)) : "");
             ClearResults();
         }
 
@@ -1160,6 +1196,11 @@ namespace AlmImageUploader
                 Log("Added the change " + pending + " (it was chosen but 'Add >' was not pressed).");
             }
             var wanted = ids.Select(id => new DefectInfo { Id = id }).ToList();
+            foreach (var p in DefectLinks.ParsePairs(txtIds.Text).Where(p => p.Value != null))
+            {
+                var d = wanted.First(x => x.Id == p.Key);
+                if (!d.ManualInstances.Contains(p.Value)) d.ManualInstances.Add(p.Value);
+            }
             var listFields = new List<AlmClient.FieldDef>();
             if (listFile != null)
                 foreach (var d in wanted)
@@ -1169,6 +1210,11 @@ namespace AlmImageUploader
                     foreach (var kv in vals)
                     {
                         if (IsOwnerColumn(kv.Key)) { if (kv.Value != "") d.ListOwner = kv.Value; continue; }
+                        if (IsInstanceColumn(kv.Key))
+                        {
+                            foreach (var i in DefectLinks.ParseIds(kv.Value)) if (!d.ManualInstances.Contains(i)) d.ManualInstances.Add(i);
+                            continue;
+                        }
                         var f = FieldFor(kv.Key);
                         if (f == null) continue;
                         d.ListValues[f.Name] = kv.Value;
@@ -1395,6 +1441,14 @@ namespace AlmImageUploader
         // ------------------------------------------------------------ assigned to
         static string UserText(KeyValuePair<string, string> u) { return u.Value != "" && u.Value != u.Key ? u.Value + "  (" + u.Key + ")" : u.Key; }
 
+        /// A list column with the test case (linked entity) of each defect.
+        static bool IsInstanceColumn(string column)
+        {
+            var n = Util.Norm(column);
+            return n == "test case id" || n == "linked entity" || n == "linked entity id" || n == "test instance" || n == "test instance id"
+                   || n == "entity id" || n == "testcycl id";
+        }
+
         bool IsOwnerColumn(string column)
         {
             var n = Util.Norm(column);
@@ -1518,7 +1572,8 @@ namespace AlmImageUploader
             foreach (var d in defects.Where(d => d.Problem != null))
             {
                 if (show == 1) continue;
-                var it = new ListViewItem(new[] { d.Id, d.Summary, d.Status, string.Join(", ", d.LinkedTo), "", "", "", "", "", "", d.Problem })
+                var it = new ListViewItem(new[] { d.Id, d.Summary, d.Status, d.LinkedTo.Count > 0 ? string.Join(", ", d.LinkedTo) : "(" + d.Problem + ")",
+                                                  "", "", "", "", "", "", d.Problem })
                          { Tag = d, ForeColor = Color.Firebrick };
                 lv.Items.Add(it);
             }

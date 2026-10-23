@@ -11,6 +11,23 @@ using System.Windows.Forms;
 
 namespace AlmImageUploader
 {
+    /// Keeps a window on the screen: on a laptop with display scaling (e.g. 150%) a tall window
+    /// can be higher than the screen, hiding its title bar and its buttons.
+    public static class ScreenFit
+    {
+        public static void Fit(Form f)
+        {
+            var at = f.Owner != null && f.Owner.Visible ? new Point(f.Owner.Left + f.Owner.Width / 2, f.Owner.Top + f.Owner.Height / 2)
+                                                        : new Point(f.Left + f.Width / 2, f.Top + f.Height / 2);
+            var wa = Screen.FromPoint(at).WorkingArea;
+            int w = Math.Min(f.Width, wa.Width), h = Math.Min(f.Height, wa.Height);
+            if (w != f.Width || h != f.Height) f.Size = new Size(w, h);
+            int x = Math.Max(wa.Left, Math.Min(f.Left, wa.Right - f.Width));
+            int y = Math.Max(wa.Top, Math.Min(f.Top, wa.Bottom - f.Height));
+            if (x != f.Left || y != f.Top) f.Location = new Point(x, y);
+        }
+    }
+
     /// Base for the two dialogs: a worker thread, a log and UI-thread helpers.
     public class WorkDialog : Form
     {
@@ -25,6 +42,22 @@ namespace AlmImageUploader
             MinimizeBox = false;
             ShowInTaskbar = false;
             FormClosing += (s, e) => { if (Busy) { stop = true; e.Cancel = true; } };
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            ScreenFit.Fit(this);
+        }
+
+        /// Puts the content in a scrolling panel: on a small screen it keeps its usable size and the
+        /// window scrolls, instead of squeezing the list to nothing.
+        protected void AddScrolling(Control content, Size minimum)
+        {
+            var host = new Panel { Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = minimum };
+            content.Dock = DockStyle.Fill;
+            host.Controls.Add(content);
+            Controls.Add(host);
         }
 
         protected bool Busy { get { return worker != null && worker.IsAlive; } }
@@ -341,7 +374,7 @@ namespace AlmImageUploader
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
-            Controls.Add(t);
+            AddScrolling(t, new Size(900, 520));
             CancelButton = close;
         }
 

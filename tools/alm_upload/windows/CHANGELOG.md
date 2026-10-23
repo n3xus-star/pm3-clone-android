@@ -1,5 +1,15 @@
 # ALM Image Uploader - changelog
 
+## 2.17.1
+- Windows fit on the screen: with display scaling (e.g. 150%) the dialogs were taller than the
+  screen (title bar and buttons hidden). Every window is now kept inside the screen, and the
+  big dialogs scroll instead of squeezing their lists.
+- Change by defect: the linked test case can be given by hand: "3453=32682" (defect = test
+  case / linked entity ID) or a "Test case ID" / "Linked entity" list column.
+- The log says how many defect links ALM returned for each way of asking (and why a way did not
+  work), and shows a link ALM returned that does not name the defects. Defects without a linked
+  test case show the reason in the Linked entity column.
+
 ## 2.17.0
 - Change by defect: the list shows each defect's linked entity as ALM's Linked Entities tab does
   ("Test Instance 32682", "Run 7101", "Run Step 8001 (run 7102)"), the ID of the test case

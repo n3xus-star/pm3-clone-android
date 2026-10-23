@@ -93,6 +93,7 @@ namespace AlmImageUploader
             Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(1180, 820);
+            Load += (s0, e0) => ScreenFit.Fit(this);
             MinimumSize = new Size(900, 640);
             StartPosition = FormStartPosition.CenterScreen;
             LoadSettings();

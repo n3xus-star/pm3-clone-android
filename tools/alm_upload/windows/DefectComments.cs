@@ -258,7 +258,7 @@ namespace AlmImageUploader
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.RowStyles.Add(new RowStyle(SizeType.Percent, 22));
-            Controls.Add(t);
+            AddScrolling(t, new Size(800, 540));
             CancelButton = close;
             UpdateButtons();
             Shown += (s, e) => Reload();
