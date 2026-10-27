@@ -110,7 +110,7 @@ namespace AlmImageUploader
         readonly TestLabFolder lab;
         readonly List<TestInstance> all, ticked;
         readonly string labText;
-        protected readonly RadioButton rbAll, rbTicked, rbExcel, rbPdf;
+        protected readonly RadioButton rbAll, rbTicked, rbExcel, rbPdf, rbTests;
         protected readonly CheckBox chkAttach, chkImagesOnly;
         protected readonly TextBox txtFile;
         readonly Button btnExport, btnOpen, btnStop;
@@ -146,7 +146,8 @@ namespace AlmImageUploader
             t.Controls.Add(new Label { Text = "Format", AutoSize = true, Margin = new Padding(3, 6, 3, 3) }, 0, 2);
             rbExcel = new RadioButton { AutoSize = true, Checked = true, Text = "Excel (.xlsx)  -  edit it and import it again, also into another department's folder" };
             rbPdf = new RadioButton { AutoSize = true, Text = "PDF report  -  summary and one table per test set" };
-            var format = Stack(rbExcel, rbPdf);
+            rbTests = new RadioButton { AutoSize = true, Text = "Test cases for import into ALM (.xlsx)  -  Subject, Test Name, Description, design steps" };
+            var format = Stack(rbExcel, rbPdf, rbTests);
             t.Controls.Add(format, 1, 2);
             t.SetColumnSpan(format, 2);
 
@@ -161,7 +162,8 @@ namespace AlmImageUploader
             chkAttach = new CheckBox { AutoSize = true, Checked = true, Text = "Include the attachments of each test case" };
             chkImagesOnly = new CheckBox { AutoSize = true, Text = "images only" };
             var attachHint = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 0, 3, 6), MaximumSize = new Size(560, 0) };
-            Action hint = () => attachHint.Text = !chkAttach.Checked ? ""
+            Action hint = () => attachHint.Text = rbTests.Checked ? "Not used: this layout has the test cases and their design steps, as people import them into ALM."
+                : !chkAttach.Checked ? ""
                 : rbExcel.Checked ? "Saved in the folder  \"" + Path.GetFileName(Results.AttachmentFolder(txtFile.Text.Trim() == "" ? "x" : txtFile.Text.Trim()))
                                     + "\"  next to the Excel file. Import uploads them to the matched test cases."
                 : "The pictures are shown under each test case in the PDF; other files are listed by name.";
@@ -174,7 +176,22 @@ namespace AlmImageUploader
             t.Controls.Add(attachBox, 1, 4);
             t.SetColumnSpan(attachBox, 2);
             hint();
-            rbExcel.CheckedChanged += (s, e) => txtFile.Text = Path.ChangeExtension(txtFile.Text, rbExcel.Checked ? ".xlsx" : ".pdf");
+            Action format2 = () =>
+            {
+                txtFile.Text = Path.ChangeExtension(txtFile.Text, rbPdf.Checked ? ".pdf" : ".xlsx");
+                // the test case layout holds no results or attachments
+                chkAttach.Enabled = !rbTests.Checked;
+                chkImagesOnly.Enabled = !rbTests.Checked && chkAttach.Checked;
+                hint();
+            };
+            rbExcel.CheckedChanged += (s, e) => format2();
+            rbPdf.CheckedChanged += (s, e) => format2();
+            rbTests.CheckedChanged += (s, e) =>
+            {
+                format2();
+                if (rbTests.Checked && Path.GetFileName(txtFile.Text).StartsWith("ALM results - "))
+                    txtFile.Text = Path.Combine(Path.GetDirectoryName(txtFile.Text), "ALM test cases - " + Path.GetFileName(txtFile.Text).Substring("ALM results - ".Length));
+            };
 
             var row = new FlowLayoutPanel { AutoSize = true };
             btnExport = Btn("Export", true);
@@ -218,7 +235,7 @@ namespace AlmImageUploader
         {
             using (var d = new SaveFileDialog())
             {
-                d.Filter = rbExcel.Checked ? "Excel workbook (*.xlsx)|*.xlsx" : "PDF (*.pdf)|*.pdf";
+                d.Filter = rbPdf.Checked ? "PDF (*.pdf)|*.pdf" : "Excel workbook (*.xlsx)|*.xlsx";
                 d.FileName = Path.GetFileName(txtFile.Text);
                 try { d.InitialDirectory = Path.GetDirectoryName(txtFile.Text); } catch (ArgumentException) { }
                 if (d.ShowDialog(this) == DialogResult.OK) txtFile.Text = d.FileName;
@@ -230,14 +247,23 @@ namespace AlmImageUploader
             if (Busy) return;
             var file = txtFile.Text.Trim();
             if (file == "") return;
-            bool excel = rbExcel.Checked, attach = chkAttach.Checked, imagesOnly = chkImagesOnly.Checked;
+            bool excel = rbExcel.Checked, attach = chkAttach.Checked, imagesOnly = chkImagesOnly.Checked, testsLayout = rbTests.Checked;
             var targets = rbTicked.Checked ? ticked : all;
             btnExport.Enabled = btnOpen.Enabled = false;
             btnStop.Enabled = true;
-            lblStatus.Text = "Reading results from ALM...";
+            lblStatus.Text = testsLayout ? "Reading the test cases and their design steps from ALM..." : "Reading results from ALM...";
             LastFile = null;
             Run(() =>
             {
+                if (testsLayout)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(file)));
+                    var n = TestPlanExport.Write(client, targets, file, labText.Split('\\').Last(), Log);
+                    Log(string.Format("Saved {0} test case(s) with {1} design step(s) to {2}", n[0], n[1], file)
+                        + (targets.Count > n[0] ? string.Format("  ({0} test case(s) in Test Lab use the same tests, written once)", targets.Count - n[0]) : ""));
+                    LastFile = file;
+                    return;
+                }
                 var f = ResultFields.Read(client);
                 var rows = Results.Fetch(client, lab, targets, f);
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(file)));

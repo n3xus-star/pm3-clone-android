@@ -26,6 +26,8 @@ namespace AlmImageUploader
         public readonly Dictionary<int, List<string>> Lists = new Dictionary<int, List<string>>();  // drop-downs
         public readonly HashSet<int> Numbers = new HashSet<int>();      // columns written as numbers (counts)
         public bool Hidden, HeaderRow = true;
+        /// Cells wrap their text and sit at the top (multi-line steps).
+        public bool Wrap;
     }
 
     public static class Xlsx
@@ -117,10 +119,11 @@ namespace AlmImageUploader
                     + "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFFFF2CC\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>"
                     + "<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"
                     + "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
-                    + "<cellXfs count=\"4\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>"
+                    + "<cellXfs count=\"5\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>"
                     + "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\"/>"
                     + "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"3\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\"/>"
-                    + "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"4\" borderId=\"0\" xfId=\"0\" applyFill=\"1\"/></cellXfs>"
+                    + "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"4\" borderId=\"0\" xfId=\"0\" applyFill=\"1\"/>"
+                    + "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"top\" wrapText=\"1\"/></xf></cellXfs>"
                     + "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>");
                 for (int i = 0; i < all.Count; i++)
                     Put(zip, "xl/worksheets/sheet" + (i + 1) + ".xml", SheetXml(all[i], listRefs));
@@ -152,9 +155,9 @@ namespace AlmImageUploader
                 for (int c = 0; c < row.Length; c++)
                 {
                     bool header = s.HeaderRow && r == 0;
-                    int style = header ? (s.Editable.Contains(c) ? 2 : 1) : (s.Editable.Contains(c) ? 3 : 0);
+                    int style = header ? (s.Editable.Contains(c) ? 2 : 1) : (s.Editable.Contains(c) ? 3 : s.Wrap ? 4 : 0);
                     var v = row[c];
-                    if (string.IsNullOrEmpty(v) && style == 0) continue;
+                    if (string.IsNullOrEmpty(v) && (style == 0 || style == 4)) continue;
                     x.AppendFormat("<c r=\"{0}{1}\"{2}", Col(c), r + 1, style != 0 ? " s=\"" + style + "\"" : "");
                     if (string.IsNullOrEmpty(v)) { x.Append("/>"); continue; }
                     long number;
@@ -779,6 +782,123 @@ namespace AlmImageUploader
             for (int i = 0; i < pdf.PageCount; i++)
                 pdf.Footer(i, string.Format("Page {0} of {1}", i + 1, pdf.PageCount));
             pdf.Save(path);
+        }
+    }
+
+    // ============================================================ test plan export
+    /// The test cases in the layout people use to import them into ALM (Excel add-in / Test Plan
+    /// import): Subject, Type, Test Name, Description, then one row per design step.
+    public static class TestPlanExport
+    {
+        public static readonly string[] Header =
+        {
+            "Subject", "Type", "Test Name", "Description",
+            "Step Name (Design Steps)", "Description (Design Steps)", "Expected Result (Design Steps)",
+        };
+
+        static string Get(Dictionary<string, string> d, string k)
+        {
+            string v;
+            return d.TryGetValue(k, out v) ? v ?? "" : "";
+        }
+
+        /// An ALM memo (HTML) as plain text with its line breaks.
+        public static string MemoText(string html)
+        {
+            if (string.IsNullOrEmpty(html)) return "";
+            if (!Regex.IsMatch(html, @"<[a-zA-Z/!]")) return html.Replace("\r\n", "\n").Trim();
+            var t = Regex.Replace(html, @"<(head|style|script)\b.*?</\1>", "", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            t = Regex.Replace(t, @"\r?\n", " ");
+            t = Regex.Replace(t, @"<br\s*/?>", "\n", RegexOptions.IgnoreCase);
+            t = Regex.Replace(t, @"</(div|p|li|tr|h[1-6])\s*>", "\n", RegexOptions.IgnoreCase);
+            t = Regex.Replace(t, @"<li\b[^>]*>", "- ", RegexOptions.IgnoreCase);
+            t = Regex.Replace(t, @"<[^>]+>", "");
+            t = WebUtility.HtmlDecode(t).Replace('\u00a0', ' ');
+            var lines = t.Split('\n').Select(l => Regex.Replace(l, @"[ \t]+", " ").Trim()).ToList();
+            var sb = new StringBuilder();
+            int blank = 0;
+            foreach (var l in lines)
+            {
+                if (l == "") { if (++blank > 1) continue; }
+                else blank = 0;
+                sb.Append(l).Append('\n');
+            }
+            return sb.ToString().Trim('\n', ' ');
+        }
+
+        static string TypeText(string subtype)
+        {
+            if (subtype.IndexOf("manual", StringComparison.OrdinalIgnoreCase) >= 0 || subtype == "") return "Manual";
+            return subtype;
+        }
+
+        static string SheetName(string name)
+        {
+            name = Regex.Replace(name ?? "", @"[\[\]:*?/\\]", "_").Trim().Trim('\'');
+            if (name == "") name = "Test cases";
+            return name.Length > 31 ? name.Substring(0, 31) : name;
+        }
+
+        /// Writes the tests of the given test cases (each test once, in the order of the list).
+        /// Returns (tests, steps).
+        public static int[] Write(AlmClient client, List<TestInstance> targets, string path, string sheet, Action<string> log)
+        {
+            var testIds = new List<string>();
+            foreach (var i in targets)
+                if (!string.IsNullOrEmpty(i.TestId) && !testIds.Contains(i.TestId)) testIds.Add(i.TestId);
+            var tests = client.GetByIds("tests", "id", testIds, new[] { "id", "name", "description", "subtype-id", "parent-id" })
+                              .ToDictionary(t => Get(t, "id"));
+
+            // Test Plan folders, for the Subject path (without the "Subject" root)
+            var folders = new Dictionary<string, Dictionary<string, string>>();
+            var need = tests.Values.Select(t => Get(t, "parent-id")).Where(p => p != "" && p != "0").Distinct().ToList();
+            for (int depth = 0; need.Count > 0 && depth < 40; depth++)
+            {
+                foreach (var f in client.GetByIds("test-folders", "id", need, new[] { "id", "name", "parent-id" }))
+                    folders[Get(f, "id")] = f;
+                need = need.Where(folders.ContainsKey).Select(id => Get(folders[id], "parent-id"))
+                           .Where(p => p != "" && p != "0" && !folders.ContainsKey(p)).Distinct().ToList();
+            }
+            Func<string, string> subject = folderId =>
+            {
+                var parts = new List<string>();
+                var p = folderId;
+                for (int depth = 0; p != "" && p != "0" && folders.ContainsKey(p) && depth < 40; depth++)
+                {
+                    parts.Insert(0, Get(folders[p], "name"));
+                    p = Get(folders[p], "parent-id");
+                }
+                if (parts.Count > 0 && string.Equals(parts[0], "Subject", StringComparison.OrdinalIgnoreCase)) parts.RemoveAt(0);
+                return string.Join("\\", parts);
+            };
+
+            var steps = client.GetByIds("design-steps", "parent-id", testIds, new[] { "id", "parent-id", "name", "description", "expected", "step-order" })
+                              .GroupBy(st => Get(st, "parent-id"))
+                              .ToDictionary(g => g.Key, g => g.OrderBy(st => Util.ToInt(Get(st, "step-order"))).ThenBy(st => Util.ToInt(Get(st, "id"))).ToList());
+
+            var sh = new XlsxSheet { Name = SheetName(sheet), Wrap = true, Widths = new double[] { 42, 10, 42, 50, 12, 70, 70 } };
+            sh.Rows.Add(Header);
+            int nTests = 0, nSteps = 0;
+            foreach (var id in testIds)
+            {
+                Dictionary<string, string> t;
+                if (!tests.TryGetValue(id, out t)) { log("Test " + id + " not found in Test Plan - left out."); continue; }
+                var head = new[] { subject(Get(t, "parent-id")), TypeText(Get(t, "subtype-id")), Get(t, "name"), MemoText(Get(t, "description")) };
+                List<Dictionary<string, string>> list;
+                if (!steps.TryGetValue(id, out list) || list.Count == 0)
+                    sh.Rows.Add(head.Concat(new[] { "", "", "" }).ToArray());
+                else
+                    for (int k = 0; k < list.Count; k++)
+                    {
+                        var st = list[k];
+                        var left = k == 0 ? head : new[] { "", "", "", "" };
+                        sh.Rows.Add(left.Concat(new[] { Get(st, "name"), MemoText(Get(st, "description")), MemoText(Get(st, "expected")) }).ToArray());
+                        nSteps++;
+                    }
+                nTests++;
+            }
+            Xlsx.Write(path, new List<XlsxSheet> { sh });
+            return new[] { nTests, nSteps };
         }
     }
 

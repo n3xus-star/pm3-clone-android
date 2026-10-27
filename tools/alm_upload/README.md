@@ -8,7 +8,7 @@ No Python and no installation needed: one `.exe` file.
 
 ## Windows program (single .exe, recommended)
 
-Current version: **2.18.0** (see `windows/CHANGELOG.md`).
+Current version: **2.19.0** (see `windows/CHANGELOG.md`).
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
@@ -45,6 +45,8 @@ nothing to install and no Python. It works step by step:
      or the ticked test cases to Excel (editable, with drop-downs) or to a PDF report,
      with each test case's attachments (Excel: folder "<file> - attachments" next to it;
      PDF: the pictures under each test case)
+     Export can also write the test cases themselves for import into ALM (Subject, Type,
+     Test Name, Description and one row per design step)
    - **Import results...** reads such an Excel file into the loaded folder - the same one or
      another department's (matched by ID, else by test set + test case name, also similar
      test set names) - and shows every change before writing it to ALM; "Upload

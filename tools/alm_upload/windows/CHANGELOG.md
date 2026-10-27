@@ -1,5 +1,13 @@
 # ALM Image Uploader - changelog
 
+## 2.19.0
+- Export results: new format "Test cases for import into ALM (.xlsx)" - the layout people use
+  to import test cases into ALM: Subject (Test Plan folder path without "Subject"), Type,
+  Test Name, Description, then one row per design step (Step Name, Description, Expected
+  Result). Taken from the test cases in the loaded Test Lab folder (all or the ticked ones);
+  a test that is in several test sets is written once. ALM's rich text (HTML) becomes plain
+  text with its line breaks; cells wrap.
+
 ## 2.18.0
 - Change by defect: the IDs can be "Defect IDs" or "Link IDs" (the Link ID column of a defect's
   Linked Entities tab). With Link IDs each link gives its defect and the one entity it links,
