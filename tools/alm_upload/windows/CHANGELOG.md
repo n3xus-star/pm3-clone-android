@@ -1,5 +1,17 @@
 # ALM Image Uploader - changelog
 
+## 2.19.1
+- Upload no longer makes the window "Not Responding": the screen (list, summary, the
+  assignments file) was brought up to date after every single file and the log written one
+  line at a time; with a fast ALM or many files already there this kept Windows busy for
+  seconds. Both are now done together a few times a second, and the summary shows
+  "Uploading n / total". (900 uploads to a fast ALM: the window stalled up to 7-10 s before,
+  now under 1 s.)
+- New "Clear all" button above Load: clears the Test Lab folder, the image folder, everything
+  loaded, the filters and the folders remembered for next time (also for Download / Export).
+  The login stays; nothing is deleted in ALM or on the disk (ALM-assignments.txt keeps the
+  assignments).
+
 ## 2.19.0
 - Export results: new format "Test cases for import into ALM (.xlsx)" - the layout people use
   to import test cases into ALM: Subject (Test Plan folder path without "Subject"), Type,

@@ -39,7 +39,7 @@ namespace AlmImageUploader
         int imgSortCol;           // 0 image, 1 test case, 2 status
         bool imgSortDesc;
         AlmClient.FieldDef commentField;   // the "Comments" column, shown as [NA] etc. in the tree
-        Button btnPickLab, btnLoad, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
+        Button btnPickLab, btnLoad, btnClearAll, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
                btnUntick, btnTickAll, btnSetField, btnDownload, btnSelectAll, btnDeselectAll, btnExport, btnImport;
         Label lblTicked, lblImagesTitle;
         // left side: tabs Images / Attachments (files in the folder, or attachments in ALM)
@@ -415,10 +415,13 @@ namespace AlmImageUploader
             var browse = B("Browse...");
             browse.Click += (s, e) => BrowseLocal(txtFolder);
             src.Controls.Add(browse, 2, 1);
+            btnClearAll = B("Clear all");
+            btnClearAll.Click += (s, e) => ClearAll();
+            btnClearAll.Dock = DockStyle.Fill;
+            src.Controls.Add(btnClearAll, 3, 0);
             btnLoad = B("Load", true);
             btnLoad.Click += OnLoad;
-            src.Controls.Add(btnLoad, 3, 0);
-            src.SetRowSpan(btnLoad, 2);
+            src.Controls.Add(btnLoad, 3, 1);
             btnLoad.Dock = DockStyle.Fill;
             main.Controls.Add(src, 0, 1);
 
@@ -1015,6 +1018,32 @@ namespace AlmImageUploader
             }, err => Log("ERROR: " + err), () => Ui(() => SetBusy(false)));
         }
 
+        /// Starts step 3 again: no Test Lab folder, no image folder, nothing loaded, and the folders
+        /// remembered for next time forgotten. The login and the assignments file stay.
+        void ClearAll()
+        {
+            if (Busy()) return;
+            if (!Confirm("Clear everything set up on this page?" + Environment.NewLine + Environment.NewLine
+                         + "  - the Test Lab folder and the image folder (also the ones remembered for next time)" + Environment.NewLine
+                         + "  - the loaded images, test cases, ticks, assignments shown and filters" + Environment.NewLine
+                         + "  - the folders remembered for Download and Export" + Environment.NewLine + Environment.NewLine
+                         + "Nothing is deleted in ALM or on the disk; the file " + AssignmentStore.FileName
+                         + " in the image folder keeps the assignments, so loading that folder again brings them back."))
+                return;
+            ClearLoaded();
+            labFolderId = null;
+            labFolderPath = null;
+            txtLabFolder.Text = "";
+            txtFolder.Text = "";
+            txtImgFilter.Text = "";
+            txtTestFilter.Text = "";
+            if (cboImgFilter.Items.Count > 0) cboImgFilter.SelectedIndex = 0;
+            if (cboTreeFilter.Items.Count > 0) cboTreeFilter.SelectedIndex = 0;
+            foreach (var k in new[] { "lab_folder", "lab_folder_id", "folder", "download_folder", "export_folder" }) settings.Remove(k);
+            SaveSettings();
+            Log("Cleared: choose the Test Lab folder and the image folder again, then press Load.");
+        }
+
         void ClearLoaded()
         {
             lab = null;
@@ -1025,6 +1054,7 @@ namespace AlmImageUploader
             ticked.Clear();
             if (lvImages == null) return;
             lvImages.Items.Clear();
+            lblImagesTitle.Text = leftMode == LeftMode.Files ? "Other files" : "Images";
             tree.Nodes.Clear();
             lstCaseImages.Items.Clear();
             SetPreview(null);
@@ -1687,21 +1717,42 @@ namespace AlmImageUploader
             {
                 var up = new Uploader(client, imageRoot, null, Log);
                 Log(string.Format("Uploading {0} attachment(s)...", todo.Count));
+                // the screen is brought up to date at most every 0.7 s, not after every file: with a fast
+                // ALM (or files already there) one update per file kept Windows busy ("Not Responding")
+                var pending = new List<KeyValuePair<ImageItem, TestInstance>>();
+                var gate = new object();
+                var last = DateTime.MinValue;
+                int handled = 0;
+                Action<bool> flush = final =>
+                {
+                    List<KeyValuePair<ImageItem, TestInstance>> batch;
+                    lock (gate) { batch = new List<KeyValuePair<ImageItem, TestInstance>>(pending); pending.Clear(); }
+                    int n = handled;
+                    Ui(() =>
+                    {
+                        foreach (var b in batch) b.Key.Uploaded.Add(b.Value.Id);
+                        if (batch.Count > 0)
+                        {
+                            SaveAssignments();
+                            RefreshImageRows(batch.Select(b => b.Key).Distinct());
+                        }
+                        UpdateSummary();
+                        if (!final) lblSummary.Text = string.Format("Uploading {0} / {1} ...   ", n, todo.Count) + lblSummary.Text;
+                    });
+                };
                 foreach (var pair in todo)
                 {
                     if (stopRequested) break;
                     if (up.UploadTo(pair.Key.File, l.SetOf(pair.Value), pair.Value))
+                        lock (gate) pending.Add(pair);
+                    handled++;
+                    if ((DateTime.Now - last).TotalMilliseconds >= 700)
                     {
-                        var img = pair.Key;
-                        Ui(() =>
-                        {
-                            img.Uploaded.Add(pair.Value.Id);
-                            SaveAssignments();
-                            RefreshImageRows(new[] { img });
-                            UpdateSummary();
-                        });
+                        last = DateTime.Now;
+                        flush(false);
                     }
                 }
+                flush(true);
                 Log(string.Format("Done: {0} uploaded, {1} already there, {2} failed.", up.Ok, up.Skipped, up.Failed));
                 Ui(() =>
                 {
@@ -1796,9 +1847,37 @@ namespace AlmImageUploader
             else a();
         }
 
+        // log lines are written to the screen together, a few times a second: one screen update per
+        // line kept Windows busy when many files went by quickly
+        readonly List<string> logQueue = new List<string>();
+        bool logFlushQueued;
+
         void Log(string msg)
         {
-            Ui(() => txtLog.AppendText(msg + Environment.NewLine));
+            lock (logQueue)
+            {
+                logQueue.Add(msg);
+                if (logFlushQueued) return;
+                logFlushQueued = true;
+            }
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Thread.Sleep(150);
+                // before the window exists there is no screen to write to yet
+                for (int k = 0; k < 600 && !IsHandleCreated && !IsDisposed; k++) Thread.Sleep(50);
+                if (!IsHandleCreated) { lock (logQueue) logFlushQueued = false; return; }
+                Ui(() =>
+                {
+                    string text;
+                    lock (logQueue)
+                    {
+                        text = string.Join(Environment.NewLine, logQueue) + Environment.NewLine;
+                        logQueue.Clear();
+                        logFlushQueued = false;
+                    }
+                    if (!txtLog.IsDisposed) txtLog.AppendText(text);
+                });
+            });
         }
 
         bool Busy()
@@ -1828,7 +1907,7 @@ namespace AlmImageUploader
 
         void SetBusy(bool busy)
         {
-            btnLoad.Enabled = btnPickLab.Enabled = !busy;
+            btnLoad.Enabled = btnPickLab.Enabled = btnClearAll.Enabled = !busy;
             EnableAssignUi(!busy && lab != null);
             btnStop.Enabled = busy;
             UseWaitCursor = busy;
