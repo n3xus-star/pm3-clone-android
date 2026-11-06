@@ -1,5 +1,21 @@
 # ALM Image Uploader - changelog
 
+## 2.20.0
+- Better matching of images to test cases on Load. A file or folder that has a test case's
+  name is now assigned to it, also when:
+  - the name has a trailing number or copy mark: "Name_2", "Name (3)", "Name - Copy";
+  - the name starts with the test case's name: "1.1_Land_Screen_step2.png" (the longest
+    name wins, so "1.1.10_..." never goes to "1.1.1_...");
+  - only a folder has the name: "1.1.1_Principal_Activation_Success\IMG_2041.png", also
+    without a test set folder around it.
+  A test case that is in several test sets is picked by a folder named after the test set;
+  otherwise the image shows "maybe" with each of them. Suggestions now use the folder names
+  too, not only the file name.
+- Attachments tab > In ALM: "Remove duplicates..." finds attachments of a test case that are
+  the same file under another name (same bytes; only files of the same size are downloaded),
+  selects them and deletes them after asking; the oldest of each stays.
+- Upload: files with the same picture assigned to the same test case are uploaded once.
+
 ## 2.19.1
 - Upload no longer makes the window "Not Responding": the screen (list, summary, the
   assignments file) was brought up to date after every single file and the log written one

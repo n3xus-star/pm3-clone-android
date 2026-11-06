@@ -65,7 +65,7 @@ namespace AlmImageUploader
         ComboBox cboAlmType;
         Label lblAlmTitle, lblAlmInfo;
         PictureBox picAlm;
-        Button btnAlmRefresh, btnAlmDownload, btnAlmCopy, btnAlmDelete, btnAlmOpen;
+        Button btnAlmRefresh, btnAlmDownload, btnAlmCopy, btnAlmDelete, btnAlmOpen, btnAlmDupes;
         int almPreviewSeq;
         ListView lvImages;
         PictureBox picPreview;
@@ -644,7 +644,10 @@ namespace AlmImageUploader
             btnAlmCopy.Click += (s, e) => CopyAlmSelected();
             btnAlmDelete.Click += (s, e) => DeleteAlmSelected();
             btnAlmOpen.Click += (s, e) => OpenAlmSelected();
-            p.Controls.Add(Flow(btnAlmOpen, btnAlmDownload, btnAlmCopy, btnAlmDelete), 0, 5);
+            btnAlmDupes = B("Remove duplicates...");
+            btnAlmDupes.ForeColor = Color.Firebrick;
+            btnAlmDupes.Click += (s, e) => RemoveAlmDuplicates();
+            p.Controls.Add(Flow(btnAlmOpen, btnAlmDownload, btnAlmCopy, btnAlmDelete, btnAlmDupes), 0, 5);
             return p;
         }
 
@@ -850,6 +853,72 @@ namespace AlmImageUploader
             }));
         }
 
+        /// Finds attachments of a test case that are the same file under another name (same bytes) and
+        /// deletes them after asking; the first one (the oldest) of each set stays. Only files of the
+        /// same size are downloaded and compared.
+        void RemoveAlmDuplicates()
+        {
+            if (Busy()) return;
+            if (almRows.Count == 0) { Say("Load the attachments of the ticked test cases first (Load / Refresh)."); return; }
+            var rows = almRows.ToList();
+            stopRequested = false;
+            SetBusy(true);
+            var dupes = new List<KeyValuePair<AlmRow, AlmRow>>();   // copy, the one it is the same as
+            RunBackground(() =>
+            {
+                int compared = 0;
+                foreach (var byCase in rows.GroupBy(r => r.Inst.Id))
+                    foreach (var bySize in byCase.GroupBy(r => r.Att.Size).Where(g => g.Count() > 1))
+                    {
+                        var seen = new Dictionary<string, AlmRow>();
+                        foreach (var r in bySize.OrderBy(r => Util.ToInt(r.Att.Id)).ThenBy(r => r.Att.Name, StringComparer.OrdinalIgnoreCase))
+                        {
+                            if (stopRequested) return;
+                            string hash;
+                            using (var sha = System.Security.Cryptography.SHA256.Create())
+                                hash = Convert.ToBase64String(sha.ComputeHash(client.DownloadAttachment("test-instances", r.Inst.Id, r.Att)));
+                            compared++;
+                            AlmRow first;
+                            if (seen.TryGetValue(hash, out first)) dupes.Add(new KeyValuePair<AlmRow, AlmRow>(r, first));
+                            else seen[hash] = r;
+                        }
+                    }
+                Log(string.Format("Duplicates: compared {0} attachment(s) of {1} test case(s) - {2} copy(ies) found.",
+                                  compared, rows.Select(r => r.Inst.Id).Distinct().Count(), dupes.Count));
+            }, err => Log("ERROR: " + err), () => Ui(() =>
+            {
+                SetBusy(false);
+                if (stopRequested) return;
+                if (dupes.Count == 0) { Say("No duplicates: no test case has the same file twice."); return; }
+                var copies = new HashSet<AlmRow>(dupes.Select(d => d.Key));
+                foreach (ListViewItem it in lvAlm.Items) it.Selected = copies.Contains((AlmRow)it.Tag);
+                var list = string.Join("\n", dupes.Take(15).Select(d => "  " + CaseText(lab, d.Key.Inst) + ":  " + d.Key.Att.Name + "   (same as " + d.Value.Att.Name + ")"));
+                if (dupes.Count > 15) list += "\n  ... and " + (dupes.Count - 15) + " more (selected in the list)";
+                if (!Confirm(string.Format("Delete {0} duplicate attachment(s) from ALM?\n\n{1}\n\nEach is the same file as the one in brackets, which stays. This cannot be undone.",
+                                           dupes.Count, list)))
+                    return;
+                SetBusy(true);
+                var deleted = new List<AlmRow>();
+                RunBackground(() =>
+                {
+                    foreach (var d in dupes)
+                    {
+                        if (stopRequested) break;
+                        client.DeleteAttachment("test-instances", d.Key.Inst.Id, d.Key.Att);
+                        lock (deleted) deleted.Add(d.Key);
+                        Log("[DEL ] " + CaseText(lab, d.Key.Inst) + ":  " + d.Key.Att.Name + "  (same as " + d.Value.Att.Name + ")");
+                    }
+                    Log(string.Format("Deleted {0} duplicate attachment(s) from ALM.", deleted.Count));
+                }, err => Log("ERROR: " + err), () => Ui(() =>
+                {
+                    SetBusy(false);
+                    almRows.RemoveAll(deleted.Contains);
+                    FillAlmList();
+                    OnAlmSelected();
+                }));
+            }));
+        }
+
         Control BuildTestsPanel()
         {
             var p = Rows(SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize);
@@ -982,11 +1051,21 @@ namespace AlmImageUploader
                     var r = l.Resolve(folder, img.File);    // already sorted into <test set>\<test case> folders
                     if (r.Instance != null) { img.Assigned.Add(r.Instance); fromFolders++; }
                 }
+                // a file or folder named after a test case: assigned when that is one test case
+                var matcher = new NameMatcher(l);
+                int byName = 0;
+                foreach (var img in imgs.Where(i => i.Assigned.Count == 0))
+                {
+                    string how;
+                    var m = matcher.Match(img.Rel, out how);
+                    if (m.Count == 1) { img.Assigned.Add(m[0]); byName++; }
+                    else if (m.Count > 1) img.NameMatches.AddRange(m);
+                }
                 var sug = new Suggester(l);
                 foreach (var img in imgs)
                 {
                     bool weak;
-                    img.NameSuggestion = sug.Suggest(img.Rel, out weak);
+                    img.NameSuggestion = sug.SuggestPath(img.Rel, out weak);
                     img.NameSuggestionWeak = weak;
                 }
                 ImageItem.RefreshSuggestions(imgs);
@@ -995,6 +1074,10 @@ namespace AlmImageUploader
                     imgs.Count(i => i.Suggestion != null && !i.SuggestWeak), imgs.Count(i => i.Suggestion != null && i.SuggestWeak),
                     imgs.Count(i => i.Assigned.Count == 0 && i.Suggestion == null)));
                 if (fromFolders > 0) Log(fromFolders + " file(s) assigned from their <test set>\\<test case> folder.");
+                if (byName > 0) Log(byName + " file(s) assigned because the file or its folder has the name of a test case.");
+                int several = imgs.Count(i => i.Assigned.Count == 0 && i.NameMatches.Count > 1);
+                if (several > 0) Log(several + " file(s) have the name of a test case that is in several test sets: shown as 'maybe' with each of them - Accept suggestion assigns it to all, or pick one in the tree and press Assign.");
+                fromFolders += byName;
                 Ui(() =>
                 {
                     lab = l;
@@ -1066,7 +1149,7 @@ namespace AlmImageUploader
         {
             foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnTickAll, btnSetField, btnDownload,
                                               btnSelectAll, btnDeselectAll, btnExport, btnImport,
-                                              btnAlmRefresh, btnAlmDownload, btnAlmCopy, btnAlmDelete, btnAlmOpen })
+                                              btnAlmRefresh, btnAlmDownload, btnAlmCopy, btnAlmDelete, btnAlmOpen, btnAlmDupes })
                 c.Enabled = on;
         }
 
@@ -1716,6 +1799,33 @@ namespace AlmImageUploader
             RunBackground(() =>
             {
                 var up = new Uploader(client, imageRoot, null, Log);
+                // the same picture twice for one test case (a copy under another name): upload it once
+                var copiesOf = new Dictionary<string, List<ImageItem>>();   // "file|test case" of the one uploaded -> its copies
+                var skip = new HashSet<string>();
+                Func<KeyValuePair<ImageItem, TestInstance>, string> key = pr => pr.Key.File + "|" + pr.Value.Id;
+                foreach (var byCase in todo.GroupBy(pr => pr.Value))
+                    foreach (var bySize in byCase.GroupBy(pr => { try { return new FileInfo(pr.Key.File).Length; } catch (IOException) { return -1L; } })
+                                                 .Where(g => g.Key >= 0 && g.Count() > 1))
+                    {
+                        var seen = new Dictionary<string, KeyValuePair<ImageItem, TestInstance>>();
+                        foreach (var pr in bySize)
+                        {
+                            string hash;
+                            try { using (var sha = System.Security.Cryptography.SHA256.Create()) hash = Convert.ToBase64String(sha.ComputeHash(File.ReadAllBytes(pr.Key.File))); }
+                            catch (IOException) { continue; }
+                            KeyValuePair<ImageItem, TestInstance> first;
+                            if (!seen.TryGetValue(hash, out first)) { seen[hash] = pr; continue; }
+                            List<ImageItem> same;
+                            if (!copiesOf.TryGetValue(key(first), out same)) copiesOf[key(first)] = same = new List<ImageItem>();
+                            same.Add(pr.Key);
+                            skip.Add(key(pr));
+                        }
+                    }
+                if (skip.Count > 0)
+                {
+                    todo = todo.Where(pr => !skip.Contains(key(pr))).ToList();
+                    Log(string.Format("{0} file(s) are the same picture as another file for the same test case: uploaded once.", skip.Count));
+                }
                 Log(string.Format("Uploading {0} attachment(s)...", todo.Count));
                 // the screen is brought up to date at most every 0.7 s, not after every file: with a fast
                 // ALM (or files already there) one update per file kept Windows busy ("Not Responding")
@@ -1744,7 +1854,16 @@ namespace AlmImageUploader
                 {
                     if (stopRequested) break;
                     if (up.UploadTo(pair.Key.File, l.SetOf(pair.Value), pair.Value))
+                    {
                         lock (gate) pending.Add(pair);
+                        List<ImageItem> copies;
+                        if (copiesOf.TryGetValue(key(pair), out copies))
+                            foreach (var c in copies)
+                            {
+                                Log("[SAME] " + c.Rel + " - same picture as " + pair.Key.Rel + ", not uploaded again to " + l.SetOf(pair.Value).PathText + " > " + pair.Value.Label);
+                                lock (gate) pending.Add(new KeyValuePair<ImageItem, TestInstance>(c, pair.Value));
+                            }
+                    }
                     handled++;
                     if ((DateTime.Now - last).TotalMilliseconds >= 700)
                     {

@@ -1059,6 +1059,96 @@ namespace AlmImageUploader
         }
     }
 
+    /// Finds the test cases an image is named after: a folder or the file itself has a test
+    /// case's name (apart from a trailing number, "(2)" or " - Copy"), or starts with it
+    /// ("1.1_Land_Screen_step2.png"). The longest name wins; a folder named after a test set
+    /// picks among test cases of the same name in several test sets.
+    public class NameMatcher
+    {
+        readonly Dictionary<string, List<TestInstance>> byName = new Dictionary<string, List<TestInstance>>();
+        readonly Dictionary<string, List<TestSet>> setsByName = new Dictionary<string, List<TestSet>>();
+        readonly TestLabFolder lab;
+        const int MinPrefix = 6;   // a name shorter than this must match whole
+
+        public NameMatcher(TestLabFolder lab)
+        {
+            this.lab = lab;
+            foreach (var ts in lab.Sets)
+            {
+                Add(setsByName, Util.Norm(ts.Name), ts);
+                foreach (var i in ts.Instances)
+                    foreach (var n in new[] { i.TestName, i.Label, i.Name }.Where(x => !string.IsNullOrEmpty(x)))
+                        Add(byName, Util.Norm(n), i);
+            }
+        }
+
+        static void Add<T>(Dictionary<string, List<T>> d, string key, T v)
+        {
+            if (key == "") return;
+            List<T> l;
+            if (!d.TryGetValue(key, out l)) d[key] = l = new List<T>();
+            if (!l.Contains(v)) l.Add(v);
+        }
+
+        /// "Name_2", "Name (3)", "Name - Copy", "Name-copy (2)" -> "Name"
+        public static string StripCopy(string stem)
+        {
+            var s = Regex.Replace(stem, @"(?:[\s_\-]*(?:\(\d{1,3}\)|copy|\d{1,3}))+$", "", RegexOptions.IgnoreCase);
+            return s.Trim(' ', '_', '-', '.');
+        }
+
+        List<TestInstance> Lookup(string text, bool prefix)
+        {
+            var k = Util.Norm(text);
+            if (k == "") return null;
+            List<TestInstance> l;
+            if (byName.TryGetValue(k, out l)) return l;
+            if (!prefix) return null;
+            string best = null;
+            foreach (var key in byName.Keys)
+                if (key.Length >= MinPrefix && k.StartsWith(key + " ") && (best == null || key.Length > best.Length)) best = key;
+            return best == null ? null : byName[best];
+        }
+
+        public List<TestInstance> Match(string rel, out string how)
+        {
+            how = null;
+            var parts = rel.Split('\\', '/').Where(x => x != "").ToList();
+            if (parts.Count == 0) return new List<TestInstance>();
+            var file = parts[parts.Count - 1];
+            var stem = file.Contains(".") ? file.Substring(0, file.LastIndexOf('.')) : file;
+            var folders = parts.Take(parts.Count - 1).Reverse().ToList();   // innermost first
+            var tries = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>(stem, "file name"),
+                new KeyValuePair<string, string>(StripCopy(stem), "file name"),
+            };
+            tries.AddRange(folders.Select(f => new KeyValuePair<string, string>(f, "folder \"" + f + "\"")));
+            List<TestInstance> found = null;
+            foreach (var t in tries)
+            {
+                found = Lookup(t.Key, false);
+                if (found == null && t.Key == stem) continue;              // the exact name first, then with a trailing number
+                if (found == null) found = Lookup(t.Key, true);
+                if (found != null) { how = t.Value; break; }
+            }
+            if (found == null) return new List<TestInstance>();
+            var result = found.Distinct().ToList();
+            if (result.Select(i => i.SetId).Distinct().Count() > 1)
+            {
+                // the same test case in several test sets: a folder (or the file) named after one
+                var named = new HashSet<string>(parts.Take(parts.Count - 1).Concat(new[] { stem })
+                    .SelectMany(p => { List<TestSet> sets; return setsByName.TryGetValue(Util.Norm(p), out sets) ? sets : new List<TestSet>(); })
+                    .Select(ts => ts.Id));
+                if (named.Count == 0)
+                    named = new HashSet<string>(lab.Sets.Where(ts => Util.Norm(stem).StartsWith(Util.Norm(ts.Name) + " ")).Select(ts => ts.Id));
+                var inSet = result.Where(i => named.Contains(i.SetId)).ToList();
+                if (inSet.Count > 0) result = inSet;
+            }
+            return result;
+        }
+    }
+
     /// Suggests a test case for an image from its file name, by word / number overlap with
     /// "<test set> <test case>": exact words count most, then word starts (land ~ landing),
     /// small typos and common abbreviations (pw ~ password). A clear winner is a strong
@@ -1137,8 +1227,27 @@ namespace AlmImageUploader
 
         public TestInstance Suggest(string fileName, out bool weak)
         {
+            return SuggestText(Path.GetFileNameWithoutExtension(fileName), out weak);
+        }
+
+        /// Like Suggest, but when the file name alone gives no clear answer the names of the
+        /// folders it is in count too ("1.1.1_Principal_Activation_Success\IMG_2041.png").
+        public TestInstance SuggestPath(string rel, out bool weak)
+        {
+            var byName = Suggest(rel, out weak);
+            if (byName != null && !weak) return byName;
+            var dir = Path.GetDirectoryName(rel);
+            if (string.IsNullOrEmpty(dir)) return byName;
+            bool weak2;
+            var withFolders = SuggestText(dir.Replace(Path.DirectorySeparatorChar, ' ') + " " + Path.GetFileNameWithoutExtension(rel), out weak2);
+            if (withFolders != null && (byName == null || !weak2)) { weak = weak2; return withFolders; }
+            return byName;
+        }
+
+        public TestInstance SuggestText(string text, out bool weak)
+        {
             weak = false;
-            var img = Tokens(Path.GetFileNameWithoutExtension(fileName));
+            var img = Tokens(text);
             // single letters written apart ("1.1 D,X") may be one code ("StatusDX")
             var letters = new List<string>();
             foreach (var t in img.Concat(new[] { "0" }))
@@ -1185,6 +1294,9 @@ namespace AlmImageUploader
         public bool SuggestWeak;
         public string SuggestLike;           // "1.3 Login-4.png" when it comes from a similar image
 
+        // test cases whose name the file or one of its folders has, when that is not one case
+        public readonly List<TestInstance> NameMatches = new List<TestInstance>();
+
         // suggestion from the file name alone, worked out once on load
         public TestInstance NameSuggestion;
         public bool NameSuggestionWeak;
@@ -1225,6 +1337,12 @@ namespace AlmImageUploader
                 {
                     img.Suggested.AddRange(sib.Assigned);
                     img.SuggestLike = Path.GetFileName(sib.Rel);
+                }
+                else if (img.NameMatches.Count > 0)
+                {
+                    // the name of a test case that is in several test sets: the user picks
+                    img.Suggested.AddRange(img.NameMatches);
+                    img.SuggestWeak = img.NameMatches.Count > 1;
                 }
                 else if (img.NameSuggestion != null)
                 {
