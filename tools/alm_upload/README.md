@@ -8,7 +8,7 @@ No Python and no installation needed: one `.exe` file.
 
 ## Windows program (single .exe, recommended)
 
-Current version: **2.22.2** (see `windows/CHANGELOG.md`).
+Current version: **2.23.0** (see `windows/CHANGELOG.md`).
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
@@ -69,6 +69,9 @@ nothing to install and no Python. It works step by step:
      shows them in a list (filter Images / other files, search, tick) and deletes only the
      ticked attachments after asking; test sets, test cases, runs, tests and design steps are
      never deleted or changed (the program refuses any delete that is not an attachment)
+   - **Fill same title...** gives test cases whose names differ only in the number in front
+     (1.1_Login_Excp, 2.1_Login_Excp, ...) the files of the first of them that has files,
+     after showing the list (optional; only the assignments change until Upload)
    - **Set field...** changes one field (e.g. the *Comments* selection list to *NA*)
      on all ticked test cases; the values come from the field's ALM list
    The assignments and what was uploaded are saved in `ALM-assignments.txt` in the

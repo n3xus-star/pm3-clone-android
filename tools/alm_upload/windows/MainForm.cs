@@ -40,7 +40,7 @@ namespace AlmImageUploader
         bool imgSortDesc;
         AlmClient.FieldDef commentField;   // the "Comments" column, shown as [NA] etc. in the tree
         Button btnPickLab, btnLoad, btnClearAll, btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnStop,
-               btnUntick, btnTickAll, btnSetField, btnDownload, btnSelectAll, btnDeselectAll, btnExport, btnImport;
+               btnUntick, btnTickAll, btnSetField, btnDownload, btnFillSame, btnSelectAll, btnDeselectAll, btnExport, btnImport;
         Label lblTicked, lblImagesTitle;
         // left side: tabs Images / Attachments (files in the folder, or attachments in ALM)
         enum LeftMode { Images, Files, Alm }
@@ -977,8 +977,10 @@ namespace AlmImageUploader
             btnSetField.Click += (s, e) => OpenSetField();
             btnDownload = B("Download attachments...");
             btnDownload.Click += (s, e) => OpenDownload();
+            btnFillSame = B("Fill same title...");
+            btnFillSame.Click += (s, e) => OpenFillSameTitle();
             lblTicked = new Label { AutoSize = true, Margin = new Padding(6, 9, 3, 3), ForeColor = SystemColors.GrayText };
-            p.Controls.Add(Flow(btnAssign, btnTickAll, btnUntick, btnSetField, btnDownload, lblTicked), 0, 3);
+            p.Controls.Add(Flow(btnAssign, btnTickAll, btnUntick, btnFillSame, btnSetField, btnDownload, lblTicked), 0, 3);
 
             lblCase = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 0), Text = "Files in the selected test case:" };
             p.Controls.Add(lblCase, 0, 4);
@@ -1082,9 +1084,9 @@ namespace AlmImageUploader
                     imgs.Count(i => i.IsImage) + " image(s)" + (imgs.Any(i => !i.IsImage) ? " + " + imgs.Count(i => !i.IsImage) + " other file(s)" : ""), imgs.Count(i => i.Assigned.Count > 0),
                     imgs.Count(i => i.Suggestion != null && !i.SuggestWeak), imgs.Count(i => i.Suggestion != null && i.SuggestWeak),
                     imgs.Count(i => i.Assigned.Count == 0 && i.Suggestion == null)));
-                var wide = imgs.Where(i => i.Assigned.Count > 5).ToList();
+                var wide = imgs.Where(i => i.Assigned.Select(a => FillSameTitleDialog.Title(a.TestName)).Distinct().Count() > 5).ToList();
                 if (wide.Count > 0)
-                    Log(string.Format("WARNING: {0} file(s) are each assigned to more than 5 test cases (e.g. {1}: {2} test cases), {3} attachments in all. "
+                    Log(string.Format("WARNING: {0} file(s) are each assigned to test cases of more than 5 different titles (e.g. {1}: {2} test cases), {3} attachments in all. "
                                       + "If that is not intended: on the Images tab press 'Clear all assignments' (only what is not uploaded is removed), then Load again - "
                                       + "the files are matched to their test cases again by name and folder.",
                                       wide.Count, wide[0].Rel, wide[0].Assigned.Count, wide.Sum(i => i.Assigned.Count)));
@@ -1162,7 +1164,7 @@ namespace AlmImageUploader
 
         void EnableAssignUi(bool on)
         {
-            foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnTickAll, btnSetField, btnDownload,
+            foreach (var c in new Control[] { btnAssign, btnAccept, btnUnassign, btnClearAssign, btnRemoveFromCase, btnUpload, btnUntick, btnTickAll, btnSetField, btnDownload, btnFillSame,
                                               btnSelectAll, btnDeselectAll, btnExport, btnImport,
                                               btnAlmRefresh, btnAlmDownload, btnAlmCopy, btnAlmDelete, btnAlmOpen, btnAlmDupes })
                 c.Enabled = on;
@@ -1793,6 +1795,28 @@ namespace AlmImageUploader
             AfterChange(notUploaded);
         }
 
+        /// Test cases with the same title (1.1_Login_Excp, 2.1_Login_Excp, ...) get the files of the first of them.
+        void OpenFillSameTitle()
+        {
+            if (Busy() || lab == null) return;
+            using (var d = new FillSameTitleDialog(lab, images, ticked))
+            {
+                if (ShowFillDialog(d) != DialogResult.OK) return;
+                int n = 0;
+                foreach (var r in d.Chosen)
+                    foreach (var img in r.Files.Where(f => !f.Assigned.Contains(r.Target)))
+                    {
+                        img.Assigned.Add(r.Target);
+                        n++;
+                    }
+                Log(string.Format("Fill same title: {0} file assignment(s) added to {1} test case(s) (from the same-title test case). Press Upload to send them.",
+                                  n, d.Chosen.Count));
+                AfterChange(images);
+            }
+        }
+
+        protected virtual DialogResult ShowFillDialog(FillSameTitleDialog d) { return d.ShowDialog(this); }
+
         void AfterChange(IEnumerable<ImageItem> changed)
         {
             SaveAssignments();
@@ -1885,10 +1909,10 @@ namespace AlmImageUploader
             if (todo.Count == 0) { Say("Nothing to upload: assign images to test cases first."); return; }
             int cases = todo.Select(p => p.Value).Distinct().Count();
             var q = string.Format("Upload {0} attachment(s) to {1} test case(s) in ALM?", todo.Count, cases);
-            int wide = todo.GroupBy(p => p.Key).Count(g => g.Count() > 5);
+            int wide = todo.GroupBy(p => p.Key).Count(g => g.Select(p => FillSameTitleDialog.Title(p.Value.TestName)).Distinct().Count() > 5);
             if (wide > 0)
                 q += Environment.NewLine + Environment.NewLine + string.Format(
-                    "WARNING: {0} file(s) are each going to more than 5 test cases. If each test case should get only its own files, "
+                    "WARNING: {0} file(s) are each going to test cases of more than 5 different titles. If each test case should get only its own files, "
                     + "press No, then 'Clear all assignments' and Load again.", wide);
             if (!Confirm(q)) return;
             stopRequested = false;

@@ -1,5 +1,15 @@
 # ALM Image Uploader - changelog
 
+## 2.23.0
+- New optional button "Fill same title..." (under the test case tree): test cases whose names
+  differ only in the number in front (1.1_Login_Excp, 2.1_Login_Excp, 3.1_Login_Excp, ...)
+  get the same files as the first of them that has files. A list shows each test case, where
+  its files come from and which files; untick rows to leave them out. Options: only test
+  cases without files (on), also across test sets (off), only the ticked test cases.
+  Only the assignments change; Upload sends the files to ALM.
+- The "more than 5 test cases" warning (Load / Upload) now counts different titles, so files
+  filled to same-title test cases do not trigger it.
+
 ## 2.22.2
 - Guard against assigning every file to every test case: "Assign selected files to ticked
   test cases" with several files and several test cases now asks first and says how many
