@@ -1,5 +1,13 @@
 # ALM Image Uploader - changelog
 
+## 2.22.2
+- Guard against assigning every file to every test case: "Assign selected files to ticked
+  test cases" with several files and several test cases now asks first and says how many
+  attachments that makes (e.g. 167 files x 372 test cases = 62124).
+- Load warns when files are each assigned to more than 5 test cases, and the Upload question
+  says so too, with the way out: "Clear all assignments" (only what is not uploaded), then
+  Load, which matches the files to their test cases again by name and folder.
+
 ## 2.22.1
 - Load now checks in ALM which files are really still attached. "Uploaded" was taken only
   from ALM-assignments.txt in the image folder, so after the attachments were deleted in

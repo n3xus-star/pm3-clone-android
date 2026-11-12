@@ -1082,6 +1082,12 @@ namespace AlmImageUploader
                     imgs.Count(i => i.IsImage) + " image(s)" + (imgs.Any(i => !i.IsImage) ? " + " + imgs.Count(i => !i.IsImage) + " other file(s)" : ""), imgs.Count(i => i.Assigned.Count > 0),
                     imgs.Count(i => i.Suggestion != null && !i.SuggestWeak), imgs.Count(i => i.Suggestion != null && i.SuggestWeak),
                     imgs.Count(i => i.Assigned.Count == 0 && i.Suggestion == null)));
+                var wide = imgs.Where(i => i.Assigned.Count > 5).ToList();
+                if (wide.Count > 0)
+                    Log(string.Format("WARNING: {0} file(s) are each assigned to more than 5 test cases (e.g. {1}: {2} test cases), {3} attachments in all. "
+                                      + "If that is not intended: on the Images tab press 'Clear all assignments' (only what is not uploaded is removed), then Load again - "
+                                      + "the files are matched to their test cases again by name and folder.",
+                                      wide.Count, wide[0].Rel, wide[0].Assigned.Count, wide.Sum(i => i.Assigned.Count)));
                 if (fromFolders > 0) Log(fromFolders + " file(s) assigned from their <test set>\\<test case> folder.");
                 if (byName > 0) Log(byName + " file(s) assigned because the file or its folder has the name of a test case.");
                 int several = imgs.Count(i => i.Assigned.Count == 0 && i.NameMatches.Count > 1);
@@ -1595,6 +1601,17 @@ namespace AlmImageUploader
         void Assign(List<ImageItem> imgs, List<TestInstance> targets)
         {
             if (Busy()) return;
+            // many files to many test cases at once is almost always a mistake (Select all + Tick all)
+            if (imgs.Count > 1 && targets.Count > 1)
+            {
+                int add = targets.Sum(t => imgs.Count(i => !i.Assigned.Contains(t)));
+                if (add > 20 && !Confirm(string.Format(
+                        "Assign EACH of the {0} selected files to EACH of the {1} ticked test cases?" + Environment.NewLine + Environment.NewLine
+                        + "That is {2} attachments to upload: every test case would get all {0} files." + Environment.NewLine
+                        + "To give each test case only its own files, select just those files and tick just that test case.",
+                        imgs.Count, targets.Count, add)))
+                    return;
+            }
             foreach (var inst in targets)
                 foreach (var img in imgs.Where(i => !i.Assigned.Contains(inst)))
                     img.Assigned.Add(inst);
@@ -1868,6 +1885,11 @@ namespace AlmImageUploader
             if (todo.Count == 0) { Say("Nothing to upload: assign images to test cases first."); return; }
             int cases = todo.Select(p => p.Value).Distinct().Count();
             var q = string.Format("Upload {0} attachment(s) to {1} test case(s) in ALM?", todo.Count, cases);
+            int wide = todo.GroupBy(p => p.Key).Count(g => g.Count() > 5);
+            if (wide > 0)
+                q += Environment.NewLine + Environment.NewLine + string.Format(
+                    "WARNING: {0} file(s) are each going to more than 5 test cases. If each test case should get only its own files, "
+                    + "press No, then 'Clear all assignments' and Load again.", wide);
             if (!Confirm(q)) return;
             stopRequested = false;
             SetBusy(true);
