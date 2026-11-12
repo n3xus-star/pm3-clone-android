@@ -1886,11 +1886,32 @@ namespace AlmImageUploader
         }
 
         // ------------------------------------------------------------ settings
+        static string AppDataSettings()
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                                "ALMImageUploader", SettingsFile);
+        }
+
+        // where the settings are saved: next to the exe (portable) and always also in AppData,
+        // so a new version in another folder still finds the login details
         static IEnumerable<string> SettingsPaths()
         {
             yield return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), SettingsFile);
-            yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                                      "ALMImageUploader", SettingsFile);
+            yield return AppDataSettings();
+        }
+
+        // where they are looked for: next to the exe, AppData, then the places an older version
+        // may have been run from (the folder above this one, Downloads, Desktop)
+        static IEnumerable<string> SettingsSearchPaths()
+        {
+            var exeDir = Path.GetDirectoryName(Application.ExecutablePath);
+            yield return Path.Combine(exeDir, SettingsFile);
+            yield return AppDataSettings();
+            var parent = Directory.GetParent(exeDir);
+            if (parent != null) yield return Path.Combine(parent.FullName, SettingsFile);
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrEmpty(home)) yield return Path.Combine(home, "Downloads", SettingsFile);
+            yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), SettingsFile);
         }
 
         string Setting(string key)
@@ -1901,7 +1922,7 @@ namespace AlmImageUploader
 
         void LoadSettings()
         {
-            foreach (var path in SettingsPaths())
+            foreach (var path in SettingsSearchPaths())
             {
                 if (!File.Exists(path)) continue;
                 try
@@ -1913,7 +1934,7 @@ namespace AlmImageUploader
                     }
                     return;
                 }
-                catch (IOException) { }
+                catch (Exception e) { if (!(e is IOException || e is UnauthorizedAccessException)) throw; }
             }
         }
 
@@ -1936,7 +1957,6 @@ namespace AlmImageUploader
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
                     File.WriteAllLines(path, lines);
-                    return;
                 }
                 catch (Exception e)
                 {

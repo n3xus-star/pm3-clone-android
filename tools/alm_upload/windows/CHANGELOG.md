@@ -1,5 +1,12 @@
 # ALM Image Uploader - changelog
 
+## 2.21.1
+- The login page is filled in again (ALM URL, username) when a new version is run from
+  another folder, e.g. after "Extract All" of the ZIP. The settings were kept only in
+  ALMImageUploader.ini next to the exe; they are now also kept in
+  %APPDATA%\ALMImageUploader, and when there is none next to the exe they are also looked
+  for in the folder above it, in Downloads and on the Desktop. (The password is never saved.)
+
 ## 2.21.0
 - New "Test Plan attachments..." button (top bar): bulk delete of the images and other
   attachments of the tests in a Test Plan folder.
