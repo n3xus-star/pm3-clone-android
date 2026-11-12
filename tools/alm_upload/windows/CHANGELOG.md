@@ -1,5 +1,9 @@
 # ALM Image Uploader - changelog
 
+## 2.21.2
+- "made by empayardigital" in the window title, on the login page and in the .exe's
+  Properties -> Details (Company, Copyright).
+
 ## 2.21.1
 - The login page is filled in again (ALM URL, username) when a new version is run from
   another folder, e.g. after "Extract All" of the ZIP. The settings were kept only in

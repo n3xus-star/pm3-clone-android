@@ -89,7 +89,7 @@ namespace AlmImageUploader
 
         public MainForm()
         {
-            Text = AppName + "  v" + AppInfo.Version;
+            Text = AppName + "  v" + AppInfo.Version + "   -   " + AppInfo.MadeBy;
             Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(1180, 820);
@@ -203,7 +203,7 @@ namespace AlmImageUploader
             TableLayoutPanel c;
             Label sub;
             pageLogin = Card("Step 1 of 3:  Log in to ALM", out sub, out c);
-            sub.Text = "Enter the ALM address and your ALM username and password.      (version " + AppInfo.Version + ")";
+            sub.Text = "Enter the ALM address and your ALM username and password." + Environment.NewLine + "Version " + AppInfo.Version + "  -  " + AppInfo.MadeBy;
             c.Controls.Add(L("ALM URL"), 0, 2);
             c.Controls.Add(txtUrl = T(), 1, 2);
             var eg = L("e.g. https://alm.company.com/qcbin", true);
