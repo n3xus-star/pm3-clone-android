@@ -378,7 +378,7 @@ namespace AlmImageUploader
             main.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
 
             // header: who / where + change project / log out
-            var head = new TableLayoutPanel { ColumnCount = 6, AutoSize = true, Dock = DockStyle.Top };
+            var head = new TableLayoutPanel { ColumnCount = 7, AutoSize = true, Dock = DockStyle.Top };
             head.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             lblWho3 = new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 8, 3, 3) };
             var btnChange = B("<  Change project");
@@ -386,6 +386,8 @@ namespace AlmImageUploader
             btnExport = B("Export results...");
             btnImport = B("Import results...");
             var btnDefects = B("Change by defect...");
+            var btnPlanAtt = B("Test Plan attachments...");
+            btnPlanAtt.Click += (s, e) => { if (Busy()) return; using (var d = new TestPlanAttachmentsDialog(client)) d.ShowDialog(this); };
             btnChange.Click += (s, e) => { if (!Busy()) ShowPage(pageProject); };
             btnLogout.Click += (s, e) => { if (!Busy()) Logout(); };
             btnExport.Click += (s, e) => OpenExport();
@@ -395,8 +397,9 @@ namespace AlmImageUploader
             head.Controls.Add(btnExport, 1, 0);
             head.Controls.Add(btnImport, 2, 0);
             head.Controls.Add(btnDefects, 3, 0);
-            head.Controls.Add(btnChange, 4, 0);
-            head.Controls.Add(btnLogout, 5, 0);
+            head.Controls.Add(btnPlanAtt, 4, 0);
+            head.Controls.Add(btnChange, 5, 0);
+            head.Controls.Add(btnLogout, 6, 0);
             main.Controls.Add(head, 0, 0);
 
             // sources

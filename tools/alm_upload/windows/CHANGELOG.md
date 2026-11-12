@@ -1,5 +1,18 @@
 # ALM Image Uploader - changelog
 
+## 2.21.0
+- New "Test Plan attachments..." button (top bar): bulk delete of the images and other
+  attachments of the tests in a Test Plan folder.
+  - Pick a Test Plan folder (Browse... shows the Test Plan tree); "include sub folders" (on)
+    and "also the attachments of the design steps" (off).
+  - "Find attachments" lists every attachment: folder, test, on (Test / Step n), file, size.
+    Show Images / other files / all, search, "Tick all shown" / "Untick all".
+  - "Delete ticked attachments" lists what will be deleted and asks first, then checks in ALM
+    that they are gone.
+  - Only attachments are deleted: the tests, their design steps and the test cases in Test
+    Lab are never deleted or changed. As a safety net the program now refuses any DELETE
+    request to ALM that is not for an attachment.
+
 ## 2.20.0
 - Better matching of images to test cases on Load. A file or folder that has a test case's
   name is now assigned to it, also when:

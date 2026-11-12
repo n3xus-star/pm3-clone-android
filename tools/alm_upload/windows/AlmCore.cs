@@ -109,6 +109,10 @@ namespace AlmImageUploader
         Response Send(string method, string url, byte[] body, string contentType,
                       Dictionary<string, string> headers, bool retryOn401, string accept = "application/xml")
         {
+            // this program only ever deletes attachments: refuse any other delete, whatever asks for it
+            if (string.Equals(method, "DELETE", StringComparison.OrdinalIgnoreCase)
+                && !Regex.IsMatch(new Uri(url).AbsolutePath, @"/attachments/[^/]+$", RegexOptions.IgnoreCase))
+                throw new AlmException("refused: this program deletes attachments only, not " + new Uri(url).AbsolutePath);
             var req = (HttpWebRequest)WebRequest.Create(url);
             req.Method = method;
             req.CookieContainer = cookies;
@@ -223,6 +227,22 @@ namespace AlmImageUploader
         public List<Dictionary<string, string>> GetChildFolders(string folderId)
         {
             return GetEntities("test-set-folders", "{parent-id[" + folderId + "]}", TreeFields)
+                   .OrderBy(f => f.ContainsKey("name") ? f["name"] : "", StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        // ------------------------------------------------------------ Test Plan
+        static readonly string[] PlanFolderFields = { "id", "name", "parent-id" };
+
+        /// The top Test Plan folders ("Subject").
+        public List<Dictionary<string, string>> GetTestPlanRoots()
+        {
+            return GetEntities("test-folders", "{parent-id[0]}", PlanFolderFields)
+                   .OrderBy(f => f.ContainsKey("name") ? f["name"] : "", StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        public List<Dictionary<string, string>> GetTestFoldersIn(string folderId)
+        {
+            return GetEntities("test-folders", "{parent-id[" + folderId + "]}", PlanFolderFields)
                    .OrderBy(f => f.ContainsKey("name") ? f["name"] : "", StringComparer.OrdinalIgnoreCase).ToList();
         }
 
@@ -460,6 +480,13 @@ namespace AlmImageUploader
         /// Removes one attachment from an entity (by name, else by the attachment's id).
         public void DeleteAttachment(string entity, string id, Attachment att)
         {
+            if (string.IsNullOrEmpty(id) || att == null || (string.IsNullOrEmpty(att.Name) && string.IsNullOrEmpty(att.Id)))
+                throw new AlmException("refused: no attachment named");
+            if (string.IsNullOrEmpty(att.Name))
+            {
+                Check(Send("DELETE", Rest("attachments") + "/" + att.Id, null, null, null, true), "delete attachment " + att.Id);
+                return;
+            }
             var r = Send("DELETE", Rest(entity) + "/" + id + "/attachments/" + Uri.EscapeDataString(att.Name), null, null, null, true);
             if ((r.Status == 404 || r.Status == 400 || r.Status == 405) && att.Id != "")
                 r = Send("DELETE", Rest("attachments") + "/" + att.Id, null, null, null, true);
