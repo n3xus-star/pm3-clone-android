@@ -1053,6 +1053,7 @@ namespace AlmImageUploader
                 Log(string.Format("Found {0} test set(s) with {1} test case(s).", l.Sets.Count, l.InstanceCount));
                 var imgs = Util.ListFiles(folder).Select(f => new ImageItem { File = f, Rel = Util.RelPath(folder, f), IsImage = Util.HasImageExt(f) }).ToList();
                 AssignmentStore.Load(folder, domain, project, l, imgs);
+                int notInAlm = CheckUploadedInAlm(imgs);
                 int fromFolders = 0;
                 foreach (var img in imgs.Where(i => i.Assigned.Count == 0))
                 {
@@ -1099,7 +1100,7 @@ namespace AlmImageUploader
                     cboImgFilter.SelectedIndex = 0;
                     txtTestFilter.Text = "";
                     cboTreeFilter.SelectedIndex = 0;
-                    if (fromFolders > 0) SaveAssignments();
+                    if (fromFolders > 0 || notInAlm > 0) SaveAssignments();
                     EnableAssignUi(true);
                     RefreshImages();
                     RefreshTree();
@@ -1792,6 +1793,73 @@ namespace AlmImageUploader
         }
 
         // ------------------------------------------------------------ upload
+        /// "Uploaded" comes from ALM-assignments.txt; an attachment may have been deleted in ALM
+        /// since (in ALM itself or with Delete attachments...). Reads the attachments of every test
+        /// case marked uploaded and clears the mark of each file that is no longer there, so it
+        /// shows "to upload" again. Returns how many marks were cleared.
+        int CheckUploadedInAlm(List<ImageItem> imgs)
+        {
+            var ids = imgs.SelectMany(i => i.Uploaded).Distinct().ToList();
+            if (ids.Count == 0) return 0;
+            Log(string.Format("Checking in ALM the attachments of {0} test case(s) marked as uploaded...", ids.Count));
+            var names = new Dictionary<string, HashSet<string>>();
+            var gate = new object();
+            int next = -1, failed = 0;
+            ThreadStart work = () =>
+            {
+                while (true)
+                {
+                    int k = Interlocked.Increment(ref next);
+                    if (k >= ids.Count) return;
+                    try
+                    {
+                        var n = client.ListAttachmentNames("test-instances", ids[k]);
+                        lock (gate) names[ids[k]] = n;
+                    }
+                    catch (Exception e)
+                    {
+                        if (!(e is AlmException || e is WebException)) throw;
+                        Interlocked.Increment(ref failed);   // unknown: the mark stays
+                    }
+                }
+            };
+            var threads = Enumerable.Range(0, Math.Min(4, ids.Count)).Select(_ => new Thread(work) { IsBackground = true }).ToList();
+            threads.ForEach(t => t.Start());
+            threads.ForEach(t => t.Join());
+
+            // a file not in ALM under its own name stays "uploaded" only when it is the same picture
+            // as one that is there (a copy that was uploaded once under the other name)
+            var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            Func<string, string> hash = f =>
+            {
+                string h;
+                if (hashes.TryGetValue(f, out h)) return h;
+                try { using (var sha = System.Security.Cryptography.SHA256.Create()) h = Convert.ToBase64String(sha.ComputeHash(File.ReadAllBytes(f))); }
+                catch (Exception e) { if (!(e is IOException || e is UnauthorizedAccessException)) throw; h = null; }
+                return hashes[f] = h;
+            };
+            int cleared = 0;
+            foreach (var id in names.Keys)
+            {
+                var there = names[id];
+                var marked = imgs.Where(i => i.Uploaded.Contains(id)).ToList();
+                var present = marked.Where(i => there.Contains(Path.GetFileName(i.File))).ToList();
+                foreach (var img in marked.Where(i => !there.Contains(Path.GetFileName(i.File))))
+                {
+                    var h = present.Count == 0 ? null : hash(img.File);
+                    if (h != null && present.Any(p => hash(p.File) == h)) continue;
+                    img.Uploaded.Remove(id);
+                    cleared++;
+                }
+            }
+            if (cleared > 0)
+                Log(string.Format("{0} file(s) were marked as uploaded but are no longer in ALM (deleted there): they show as 'to upload' again.", cleared));
+            else
+                Log("All files marked as uploaded are in ALM.");
+            if (failed > 0) Log(string.Format("Could not read the attachments of {0} test case(s): their files keep the 'uploaded' mark.", failed));
+            return cleared;
+        }
+
         void OnUpload(object sender, EventArgs e)
         {
             if (Busy() || lab == null) return;

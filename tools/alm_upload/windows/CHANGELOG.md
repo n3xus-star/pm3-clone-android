@@ -1,5 +1,14 @@
 # ALM Image Uploader - changelog
 
+## 2.22.1
+- Load now checks in ALM which files are really still attached. "Uploaded" was taken only
+  from ALM-assignments.txt in the image folder, so after the attachments were deleted in
+  ALM (in ALM itself or with "Delete attachments...") the images still showed "uploaded"
+  and Upload skipped them. Now the attachments of every test case marked uploaded are read
+  (4 at a time); a file that is no longer there shows "to upload" again and can be uploaded
+  again. A copy of a picture that was uploaded once under another name keeps its mark. If
+  ALM cannot be read for a test case, its marks stay.
+
 ## 2.22.0
 - The bulk delete of attachments now works on Test Lab too. The top bar button is renamed
   "Delete attachments..."; the dialog asks "Test Lab" (default) or "Test Plan".
