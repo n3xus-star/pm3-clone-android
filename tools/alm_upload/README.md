@@ -8,7 +8,7 @@ No Python and no installation needed: one `.exe` file.
 
 ## Windows program (single .exe, recommended)
 
-Current version: **2.21.2** (see `windows/CHANGELOG.md`).
+Current version: **2.22.0** (see `windows/CHANGELOG.md`).
 
 `windows/` holds a native Windows version, `ALM-Image-Uploader.exe` (about 50 KB).
 It runs on the .NET Framework 4.x that comes with Windows 10/11, so there is
@@ -63,10 +63,11 @@ nothing to install and no Python. It works step by step:
      other files as links that ask for the ALM login when needed)
      **Delete defect comments...** there removes chosen comments (by date, author or one by one)
      from the defects' Comments and keeps a copy of the old text in Documents
-   - **Test Plan attachments...** (top bar) finds the images and other attachments of the
-     tests in a Test Plan folder (with its sub folders, optionally also those of the design
-     steps), shows them in a list (filter Images / other files, search, tick) and deletes only
-     the ticked attachments after asking; the tests, design steps and Test Lab test cases are
+   - **Delete attachments...** (top bar) finds the images and other attachments in a
+     **Test Lab** folder (the test cases of its test sets, optionally also their runs) or a
+     **Test Plan** folder (the tests, optionally also their design steps), with its sub folders,
+     shows them in a list (filter Images / other files, search, tick) and deletes only the
+     ticked attachments after asking; test sets, test cases, runs, tests and design steps are
      never deleted or changed (the program refuses any delete that is not an attachment)
    - **Set field...** changes one field (e.g. the *Comments* selection list to *NA*)
      on all ticked test cases; the values come from the field's ALM list

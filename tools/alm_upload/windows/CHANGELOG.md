@@ -1,5 +1,16 @@
 # ALM Image Uploader - changelog
 
+## 2.22.0
+- The bulk delete of attachments now works on Test Lab too. The top bar button is renamed
+  "Delete attachments..."; the dialog asks "Test Lab" (default) or "Test Plan".
+  - Test Lab: choose a Test Lab folder (it starts with the folder chosen on the main page);
+    the attachments of every test case of its test sets are listed, with "include sub
+    folders" and "also the attachments of the runs". Columns: folder, test set > test case,
+    on (Test case / Run ...), file, size.
+  - Test Plan works as before (tests, optionally design steps).
+  - Only attachments are deleted: test sets, test cases, runs, tests and design steps are
+    never deleted or changed.
+
 ## 2.21.2
 - "made by empayardigital" in the window title, on the login page and in the .exe's
   Properties -> Details (Company, Copyright).

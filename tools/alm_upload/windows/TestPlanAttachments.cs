@@ -1,5 +1,6 @@
-// ALM Image Uploader - bulk delete of the attachments of the tests in a Test Plan folder.
-// Only attachments are deleted: the tests, their design steps and the Test Lab test cases stay.
+// ALM Image Uploader - bulk delete of the attachments in a Test Plan folder (tests, design steps)
+// or a Test Lab folder (test cases, runs). Only attachments are deleted: the tests, design steps,
+// test sets, test cases and runs themselves stay.
 
 using System;
 using System.Collections.Generic;
@@ -119,7 +120,7 @@ namespace AlmImageUploader
         }
     }
 
-    /// One attachment of a test (or of one of its design steps) in Test Plan.
+    /// One attachment of a test / design step (Test Plan) or a test case / run (Test Lab).
     public class PlanAttachment
     {
         public string Folder, TestName, TestId, Entity, OwnerId, OwnerText;
@@ -133,6 +134,10 @@ namespace AlmImageUploader
         readonly AlmClient client;
         protected readonly TextBox txtFolder, txtSearch;
         protected readonly CheckBox chkSub, chkSteps;
+        protected readonly RadioButton rbPlan, rbLab;
+        readonly Label lblFolder, head, note;
+        // the folder chosen in each mode, kept when switching
+        string planId, planPath, labId, labPath;
         protected readonly ComboBox cboType;
         protected readonly ListView lv;
         protected readonly Button btnFind, btnDelete, btnStop, btnTickAll, btnUntickAll;
@@ -143,10 +148,14 @@ namespace AlmImageUploader
 
         public const string TypeAll = "All files", TypeImages = "Images", TypeOther = "Other files";
 
-        public TestPlanAttachmentsDialog(AlmClient client)
+        bool Lab { get { return rbLab.Checked; } }
+
+        public TestPlanAttachmentsDialog(AlmClient client, string labFolderId = null, string labFolderPath = null)
         {
             this.client = client;
-            Text = "Test Plan attachments";
+            labId = labFolderId;
+            labPath = labFolderPath;
+            Text = "Bulk delete attachments";
             ClientSize = new Size(1000, 680);
             MaximizeBox = true;
 
@@ -154,22 +163,19 @@ namespace AlmImageUploader
             t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            var head = new Label
-            {
-                AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 4),
-                Text = "Delete images and other attachments of the tests in a Test Plan folder",
-            };
-            t.Controls.Add(head, 0, 0);
-            t.SetColumnSpan(head, 3);
-            var note = new Label
-            {
-                AutoSize = true, ForeColor = Color.DarkGreen, Margin = new Padding(3, 0, 3, 8), MaximumSize = new Size(940, 0),
-                Text = "Only the attachments are deleted. The tests, their design steps and the test cases in Test Lab are never deleted or changed.",
-            };
+            rbLab = new RadioButton { Text = "Test Lab  (test sets > test cases)", AutoSize = true, Checked = true, Margin = new Padding(3, 3, 12, 3) };
+            rbPlan = new RadioButton { Text = "Test Plan  (tests)", AutoSize = true, Margin = new Padding(3, 3, 3, 3) };
+            head = new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 6, 12, 3) };
+            var where = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 2) };
+            where.Controls.AddRange(new Control[] { head, rbLab, rbPlan });
+            t.Controls.Add(where, 0, 0);
+            t.SetColumnSpan(where, 3);
+            note = new Label { AutoSize = true, ForeColor = Color.DarkGreen, Margin = new Padding(3, 0, 3, 8), MaximumSize = new Size(940, 0) };
             t.Controls.Add(note, 0, 1);
             t.SetColumnSpan(note, 3);
 
-            t.Controls.Add(new Label { Text = "Test Plan folder", AutoSize = true, Margin = new Padding(3, 7, 3, 3) }, 0, 2);
+            lblFolder = new Label { AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
+            t.Controls.Add(lblFolder, 0, 2);
             txtFolder = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = SystemColors.Window };
             t.Controls.Add(txtFolder, 1, 2);
             var browse = Btn("Browse...");
@@ -177,7 +183,7 @@ namespace AlmImageUploader
             t.Controls.Add(browse, 2, 2);
 
             chkSub = new CheckBox { Text = "include sub folders", AutoSize = true, Checked = true };
-            chkSteps = new CheckBox { Text = "also the attachments of the design steps", AutoSize = true };
+            chkSteps = new CheckBox { AutoSize = true };
             btnFind = Btn("Find attachments", true);
             btnFind.Click += (s, e) => Find();
             var opts = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0) };
@@ -203,11 +209,11 @@ namespace AlmImageUploader
             t.SetColumnSpan(filter, 2);
 
             lv = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, CheckBoxes = true };
-            lv.Columns.Add("Folder", 230);
-            lv.Columns.Add("Test", 260);
-            lv.Columns.Add("On", 70);
-            lv.Columns.Add("File", 270);
-            lv.Columns.Add("Size", 80);
+            lv.Columns.Add("Folder", 200);
+            lv.Columns.Add("Test", 280);
+            lv.Columns.Add("On", 150);
+            lv.Columns.Add("File", 240);
+            lv.Columns.Add("Size", 70);
             lv.ItemChecked += (s, e) =>
             {
                 if (filling) return;
@@ -218,7 +224,7 @@ namespace AlmImageUploader
             };
             t.Controls.Add(lv, 0, 5);
             t.SetColumnSpan(lv, 3);
-            lblSummary = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 3), Text = "Choose a Test Plan folder, then press Find attachments." };
+            lblSummary = new Label { AutoSize = true, Margin = new Padding(3, 8, 3, 3) };
             t.Controls.Add(lblSummary, 0, 6);
             t.SetColumnSpan(lblSummary, 3);
 
@@ -245,18 +251,50 @@ namespace AlmImageUploader
             t.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
             AddScrolling(t, new Size(860, 520));
             CancelButton = close;
-            UpdateButtons();
+            rbLab.CheckedChanged += (s, e) => { if (rbLab.Checked) SwitchMode(); };
+            rbPlan.CheckedChanged += (s, e) => { if (rbPlan.Checked) SwitchMode(); };
+            SwitchMode();
+        }
+
+        /// Test Lab or Test Plan: labels, options and the folder chosen for that side.
+        void SwitchMode()
+        {
+            if (Busy) return;
+            head.Text = "Delete images and other attachments in:";
+            lblFolder.Text = Lab ? "Test Lab folder" : "Test Plan folder";
+            chkSteps.Text = Lab ? "also the attachments of the runs" : "also the attachments of the design steps";
+            note.Text = Lab
+                ? "Only the attachments are deleted. The test sets, test cases, runs and the tests in Test Plan are never deleted or changed."
+                : "Only the attachments are deleted. The tests, their design steps and the test cases in Test Lab are never deleted or changed.";
+            lv.Columns[1].Text = Lab ? "Test set > test case" : "Test";
+            folderId = Lab ? labId : planId;
+            folderPath = Lab ? labPath : planPath;
+            txtFolder.Text = folderPath ?? "";
+            items = new List<PlanAttachment>();
+            Fill();
+            if (folderId == null) lblSummary.Text = "Choose a " + (Lab ? "Test Lab" : "Test Plan") + " folder, then press Find attachments.";
         }
 
         void Browse()
         {
             if (Busy) return;
-            using (var d = new TestPlanFolderPicker(client))
-                if (d.ShowDialog(this) == DialogResult.OK) SetFolder(d.SelectedId, d.SelectedPath);
+            if (Lab)
+            {
+                using (var d = new TestLabFolderPicker(client))
+                    if (d.ShowDialog(this) == DialogResult.OK) SetFolder(d.SelectedId, d.SelectedPath);
+            }
+            else
+            {
+                using (var d = new TestPlanFolderPicker(client))
+                    if (d.ShowDialog(this) == DialogResult.OK) SetFolder(d.SelectedId, d.SelectedPath);
+            }
         }
 
+        /// Sets the folder of the side that is shown (Test Lab or Test Plan).
         public void SetFolder(string id, string path)
         {
+            if (Lab) { labId = id; labPath = path; }
+            else { planId = id; planPath = path; }
             folderId = id;
             folderPath = path;
             txtFolder.Text = path;
@@ -268,6 +306,7 @@ namespace AlmImageUploader
         protected void Find()
         {
             if (Busy || folderId == null) return;
+            if (Lab) { FindLab(); return; }
             bool sub = chkSub.Checked, steps = chkSteps.Checked;
             string rootId = folderId, rootPath = folderPath;
             var found = new List<PlanAttachment>();
@@ -337,6 +376,64 @@ namespace AlmImageUploader
             });
         }
 
+        void FindLab()
+        {
+            bool sub = chkSub.Checked, runs = chkSteps.Checked;
+            string rootId = folderId, rootPath = folderPath;
+            var found = new List<PlanAttachment>();
+            stop = false;
+            btnStop.Enabled = true;
+            lblSummary.Text = "Reading the Test Lab folders, test sets and test cases...";
+            UpdateButtons(true);
+            Run(() =>
+            {
+                var lab = new TestLabFolder(client, rootId);
+                // without sub folders: only the test sets directly in the chosen folder
+                var sets = lab.Sets.Where(x => sub || x.Path.Count == 1).ToList();
+                var insts = sets.SelectMany(x => x.Instances.Select(i => new { Set = x, Inst = i })).ToList();
+                Log(string.Format("{0} test set(s), {1} test case(s).", sets.Count, insts.Count));
+                var runsOf = new Dictionary<string, List<Dictionary<string, string>>>();
+                if (runs && insts.Count > 0)
+                    foreach (var g in client.GetByIds("runs", "testcycl-id", insts.Select(x => x.Inst.Id), new[] { "id", "name", "testcycl-id" })
+                                            .Where(r => r.ContainsKey("testcycl-id")).GroupBy(r => r["testcycl-id"]))
+                        runsOf[g.Key] = g.OrderBy(r => Util.ToInt(r["id"])).ToList();
+                int k = 0;
+                foreach (var x in insts)
+                {
+                    if (stop) { Log("Stopped - the list shows what was read so far."); break; }
+                    k++;
+                    var setFolder = x.Set.Path.Take(x.Set.Path.Count - 1).ToList();
+                    string folder = setFolder.Count == 0 ? rootPath : rootPath + "\\" + string.Join("\\", setFolder);
+                    string name = x.Set.Name + " > " + x.Inst.Label;
+                    int shown = k;
+                    Ui(() => lblSummary.Text = string.Format("Reading attachments: test case {0} / {1}   -   {2} file(s)", shown, insts.Count, found.Count));
+                    try
+                    {
+                        foreach (var a in client.GetAttachments("test-instances", x.Inst.Id))
+                            found.Add(new PlanAttachment { Folder = folder, TestName = name, TestId = x.Inst.Id, Entity = "test-instances", OwnerId = x.Inst.Id, OwnerText = "Test case", Att = a });
+                        List<Dictionary<string, string>> rs;
+                        if (runsOf.TryGetValue(x.Inst.Id, out rs))
+                            foreach (var r in rs)
+                                foreach (var a in client.GetAttachments("runs", r["id"]))
+                                    found.Add(new PlanAttachment { Folder = folder, TestName = name, TestId = x.Inst.Id, Entity = "runs", OwnerId = r["id"],
+                                                                   OwnerText = "Run " + (r.ContainsKey("name") && r["name"] != "" ? r["name"] : r["id"]), Att = a });
+                    }
+                    catch (Exception e)
+                    {
+                        if (!(e is AlmException || e is WebException)) throw;
+                        Log("Could not read the attachments of " + folder + " > " + name + ": " + e.Message);
+                    }
+                }
+                Log(string.Format("Found {0} attachment(s) ({1} image(s)) on {2} test case(s).",
+                                  found.Count, found.Count(a => a.IsImage), found.Select(a => a.TestId).Distinct().Count()));
+            }, () =>
+            {
+                items = found;
+                btnStop.Enabled = false;
+                Fill();
+            });
+        }
+
         // ------------------------------------------------------------ list
         IEnumerable<PlanAttachment> ShownItems()
         {
@@ -374,8 +471,8 @@ namespace AlmImageUploader
             var live = items.Where(a => !a.Deleted).ToList();
             int ticked = live.Count(a => a.Tick);
             lblSummary.Text = live.Count == 0 && items.Count == 0 ? "Press Find attachments."
-                : string.Format("{0} attachment(s) on {1} test(s), {2} shown;   {3} ticked to delete ({4}).",
-                                live.Count, live.Select(a => a.TestId).Distinct().Count(), lv.Items.Count, ticked,
+                : string.Format("{0} attachment(s) on {1} {2}, {3} shown;   {4} ticked to delete ({5}).",
+                                live.Count, live.Select(a => a.TestId).Distinct().Count(), Lab ? "test case(s)" : "test(s)", lv.Items.Count, ticked,
                                 SizeText(live.Where(a => a.Tick).Sum(a => Math.Max(0, a.Att.Size))));
             UpdateButtons();
         }
@@ -386,20 +483,26 @@ namespace AlmImageUploader
             btnFind.Enabled = !busy && folderId != null;
             btnDelete.Enabled = !busy && items.Any(a => a.Tick && !a.Deleted);
             btnTickAll.Enabled = btnUntickAll.Enabled = !busy && items.Count > 0;
+            rbLab.Enabled = rbPlan.Enabled = !busy;
         }
 
         // ------------------------------------------------------------ delete
+        static bool IsMain(PlanAttachment a) { return a.Entity == "tests" || a.Entity == "test-instances"; }
+
         protected void DoDelete()
         {
             if (Busy) return;
             var todo = items.Where(a => a.Tick && !a.Deleted).ToList();
             if (todo.Count == 0) return;
             var sb = new StringBuilder();
-            sb.AppendFormat("Delete {0} attachment(s) from {1} test(s) in Test Plan?", todo.Count, todo.Select(a => a.TestId).Distinct().Count()).AppendLine().AppendLine();
+            sb.AppendFormat(Lab ? "Delete {0} attachment(s) from {1} test case(s) in Test Lab?" : "Delete {0} attachment(s) from {1} test(s) in Test Plan?",
+                            todo.Count, todo.Select(a => a.TestId).Distinct().Count()).AppendLine().AppendLine();
             foreach (var a in todo.Take(15))
-                sb.AppendLine("   " + a.Folder + " > " + a.TestName + (a.Entity == "tests" ? "" : " (" + a.OwnerText + ")") + ":  " + a.Att.Name);
+                sb.AppendLine("   " + a.Folder + " > " + a.TestName + (IsMain(a) ? "" : " (" + a.OwnerText + ")") + ":  " + a.Att.Name);
             if (todo.Count > 15) sb.AppendLine("   ... and " + (todo.Count - 15) + " more (ticked in the list).");
-            sb.AppendLine().AppendLine("Only these attachments are deleted. The tests, their design steps and the test cases in Test Lab stay as they are.");
+            sb.AppendLine().AppendLine(Lab
+                ? "Only these attachments are deleted. The test sets, test cases, runs and the tests in Test Plan stay as they are."
+                : "Only these attachments are deleted. The tests, their design steps and the test cases in Test Lab stay as they are.");
             sb.Append("Deleted attachments cannot be brought back.");
             if (!Confirm(sb.ToString())) return;
             stop = false;
@@ -416,7 +519,7 @@ namespace AlmImageUploader
                         client.DeleteAttachment(a.Entity, a.OwnerId, a.Att);
                         a.Deleted = true;
                         ok++;
-                        Log("[DEL ] " + a.Folder + " > " + a.TestName + (a.Entity == "tests" ? "" : " (" + a.OwnerText + ")") + ":  " + a.Att.Name);
+                        Log("[DEL ] " + a.Folder + " > " + a.TestName + (IsMain(a) ? "" : " (" + a.OwnerText + ")") + ":  " + a.Att.Name);
                     }
                     catch (Exception e)
                     {

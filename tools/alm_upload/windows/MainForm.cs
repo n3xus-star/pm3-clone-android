@@ -386,8 +386,13 @@ namespace AlmImageUploader
             btnExport = B("Export results...");
             btnImport = B("Import results...");
             var btnDefects = B("Change by defect...");
-            var btnPlanAtt = B("Test Plan attachments...");
-            btnPlanAtt.Click += (s, e) => { if (Busy()) return; using (var d = new TestPlanAttachmentsDialog(client)) d.ShowDialog(this); };
+            var btnPlanAtt = B("Delete attachments...");
+            btnPlanAtt.Click += (s, e) =>
+            {
+                if (Busy()) return;
+                // Test Lab starts with the folder chosen on this page
+                using (var d = new TestPlanAttachmentsDialog(client, labFolderId, labFolderId == null ? null : labFolderPath)) d.ShowDialog(this);
+            };
             btnChange.Click += (s, e) => { if (!Busy()) ShowPage(pageProject); };
             btnLogout.Click += (s, e) => { if (!Busy()) Logout(); };
             btnExport.Click += (s, e) => OpenExport();

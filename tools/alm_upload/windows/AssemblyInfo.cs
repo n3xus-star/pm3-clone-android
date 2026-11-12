@@ -8,15 +8,15 @@ using System.Reflection;
 [assembly: AssemblyDescription("Assign screenshots to HP / OpenText ALM Test Lab test cases and upload them")]
 [assembly: AssemblyCompany("empayardigital")]
 [assembly: AssemblyCopyright("Made by empayardigital")]
-[assembly: AssemblyVersion("2.21.2.0")]
-[assembly: AssemblyFileVersion("2.21.2.0")]
+[assembly: AssemblyVersion("2.22.0.0")]
+[assembly: AssemblyFileVersion("2.22.0.0")]
 [assembly: AssemblyInformationalVersion("2.6.0")]
 
 namespace AlmImageUploader
 {
     public static class AppInfo
     {
-        public const string Version = "2.21.2";
+        public const string Version = "2.22.0";
         public const string MadeBy = "made by empayardigital";
     }
 }
